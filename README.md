@@ -1,6 +1,10 @@
 # crai
 
-Code review is tedious. Most diffs are full of noise—imports, formatting, lock files, trivial refactors. The interesting parts (logic changes, security implications, subtle bugs) get buried.
+<img width="1903" height="1042" alt="image" src="https://github.com/user-attachments/assets/51f31136-998c-45cc-9861-5d196cc188e2" />
+<img width="1913" height="1046" alt="image" src="https://github.com/user-attachments/assets/8b17ef4e-c516-4dbf-b7de-2daa64771c5a" />
+
+
+Code review is crai-zee hard. Most diffs are full of noise—imports, formatting, lock files, trivial refactors. The interesting parts (logic changes, security implications, subtle bugs) get buried.
 
 crai uses AI to score each chunk of a diff by how "controversial" or review-worthy it is, then filters out the noise so you can focus on what actually matters. It's a TUI that shows you diffs alongside AI analysis, helping you review code faster and catch things you might miss.
 
