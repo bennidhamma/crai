@@ -95,8 +95,8 @@ impl Action {
             KeyCode::Char('l') | KeyCode::Right => Action::Navigate(Direction::Right),
             KeyCode::PageUp => Action::Navigate(Direction::PageUp),
             KeyCode::PageDown => Action::Navigate(Direction::PageDown),
-            KeyCode::Home => Action::Navigate(Direction::Home),
-            KeyCode::End => Action::Navigate(Direction::End),
+            KeyCode::Home | KeyCode::Char('g') => Action::Navigate(Direction::Home), // g or gg for top
+            KeyCode::End | KeyCode::Char('G') => Action::Navigate(Direction::End),   // G for bottom
             KeyCode::Enter | KeyCode::Char(' ') => Action::Select,
             KeyCode::Esc => Action::Back,
             KeyCode::Tab => Action::Tab,

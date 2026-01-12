@@ -3,6 +3,95 @@ use crate::tui::app::App;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
 
+/// Render compact file tree sidebar for Review view
+pub fn render_sidebar(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    selected: usize,
+    scroll_offset: usize,
+    is_focused: bool,
+) {
+    let border_color = if is_focused {
+        Color::Cyan
+    } else {
+        Color::DarkGray
+    };
+
+    let visible_height = area.height.saturating_sub(2) as usize;
+    let sidebar_width = area.width.saturating_sub(4) as usize; // Account for borders and padding
+
+    let items: Vec<ListItem> = app
+        .diff_result
+        .files
+        .iter()
+        .enumerate()
+        .skip(scroll_offset)
+        .take(visible_height)
+        .map(|(idx, file)| {
+            let status_char = match file.status {
+                FileStatus::Added => 'A',
+                FileStatus::Deleted => 'D',
+                FileStatus::Modified => 'M',
+                FileStatus::Renamed { .. } => 'R',
+                FileStatus::Copied => 'C',
+            };
+
+            let status_style = match file.status {
+                FileStatus::Added => Style::default().fg(Color::Green),
+                FileStatus::Deleted => Style::default().fg(Color::Red),
+                FileStatus::Modified => Style::default().fg(Color::Yellow),
+                FileStatus::Renamed { .. } => Style::default().fg(Color::Blue),
+                FileStatus::Copied => Style::default().fg(Color::Cyan),
+            };
+
+            // Truncate filename for sidebar width
+            let filename = file
+                .path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("?");
+
+            let max_name_len = sidebar_width.saturating_sub(4); // Account for status char and padding
+            let truncated = if filename.len() > max_name_len && max_name_len > 3 {
+                format!("{}...", &filename[..max_name_len - 3])
+            } else {
+                filename.to_string()
+            };
+
+            let line = Line::from(vec![
+                Span::styled(format!("{} ", status_char), status_style),
+                Span::raw(truncated),
+            ]);
+
+            let item_style = if idx == selected {
+                Style::default()
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+
+            ListItem::new(line).style(item_style)
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .title(format!(" Files ({}) ", app.diff_result.files.len()))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border_color)),
+    );
+
+    let mut state = ListState::default();
+    if selected >= scroll_offset {
+        state.select(Some(selected - scroll_offset));
+    }
+
+    frame.render_stateful_widget(list, area, &mut state);
+}
+
+/// Render full file tree view (original behavior)
 pub fn render(frame: &mut Frame, area: Rect, app: &App, selected: usize, _scroll_offset: usize) {
     let items: Vec<ListItem> = app
         .diff_result

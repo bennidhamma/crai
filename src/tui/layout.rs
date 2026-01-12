@@ -37,15 +37,24 @@ impl LayoutManager {
     fn render_content(frame: &mut Frame, area: Rect, app: &App) {
         match &app.view {
             View::Summary => views::summary::render(frame, area, app),
-            View::FileTree { selected, scroll_offset } => {
-                views::file_tree::render(frame, area, app, *selected, *scroll_offset)
-            }
-            View::DiffView {
-                file_index,
-                chunk_index,
-                scroll_offset,
+            View::Review {
+                tree_selected,
+                tree_scroll_offset,
+                tree_focused,
+                stream_scroll_offset,
                 show_analysis,
-            } => views::diff::render(frame, area, app, *file_index, *chunk_index, *scroll_offset, *show_analysis),
+            } => {
+                Self::render_review(
+                    frame,
+                    area,
+                    app,
+                    *tree_selected,
+                    *tree_scroll_offset,
+                    *tree_focused,
+                    *stream_scroll_offset,
+                    *show_analysis,
+                );
+            }
             View::Stats => views::stats::render(frame, area, app),
             View::Help => views::help::render(frame, area),
             View::QuitConfirm => {
@@ -55,6 +64,59 @@ impl LayoutManager {
                 Self::render_quit_dialog(frame, area);
             }
         }
+    }
+
+    fn render_review(
+        frame: &mut Frame,
+        area: Rect,
+        app: &App,
+        tree_selected: usize,
+        tree_scroll_offset: usize,
+        tree_focused: bool,
+        stream_scroll_offset: usize,
+        show_analysis: bool,
+    ) {
+        // Split into sidebar + main content
+        let horizontal_split = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(30), // Fixed-width sidebar
+                Constraint::Min(0),     // Main content
+            ])
+            .split(area);
+
+        // Render file tree in left pane
+        views::file_tree::render_sidebar(
+            frame,
+            horizontal_split[0],
+            app,
+            tree_selected,
+            tree_scroll_offset,
+            tree_focused,
+        );
+
+        // Main pane: optionally split for analysis
+        let main_area = if show_analysis {
+            let vertical_split = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Min(10),
+                    Constraint::Length(12),
+                ])
+                .split(horizontal_split[1]);
+
+            // Render analysis at bottom based on current scroll position
+            if let Some((file_idx, chunk_idx)) = app.current_context() {
+                views::analysis::render_compact(frame, vertical_split[1], app, file_idx, chunk_idx);
+            }
+
+            vertical_split[0]
+        } else {
+            horizontal_split[1]
+        };
+
+        // Render stream view
+        views::stream::render(frame, main_area, app, stream_scroll_offset);
     }
 
     fn render_quit_dialog(frame: &mut Frame, area: Rect) {
@@ -105,9 +167,14 @@ impl LayoutManager {
             (format!(" {} ", msg.text), Style::default().bg(bg).fg(fg))
         } else {
             let keybinds = match &app.view {
-                View::Summary => "[Enter] Files [s] Stats [?] Help [q] Quit",
-                View::FileTree { .. } => "[j/k] Navigate [Enter] Open [Esc] Back [q] Quit",
-                View::DiffView { .. } => "[j/k] Scroll [h/l] Chunks []/[] Files [Tab] Analysis [Esc] Back",
+                View::Summary => "[Enter] Review [s] Stats [?] Help [q] Quit",
+                View::Review { tree_focused, .. } => {
+                    if *tree_focused {
+                        "[j/k] Navigate [Enter] Jump [Tab/l] Stream [Esc] Back"
+                    } else {
+                        "[j/k] Scroll [G/gg] End/Top [Tab/h] Files []/[] Prev/Next File [Esc] Back"
+                    }
+                }
                 View::Stats => "[Esc] Back [q] Quit",
                 View::Help => "[Esc] Back [q] Quit",
                 View::QuitConfirm => "[q/y/Enter] Confirm quit [any key] Cancel",

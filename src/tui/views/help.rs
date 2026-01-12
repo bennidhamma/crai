@@ -4,21 +4,23 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 pub fn render(frame: &mut Frame, area: Rect) {
     let help_text = r#"CRAI - Code Review AI Help
 
-NAVIGATION
-──────────
-j/k, Up/Down     Move selection up/down
-h/l, Left/Right  Navigate chunks (in diff view)
-Enter, Space     Select / Open
-Esc              Go back
-Tab              Toggle analysis pane
-[/]              Previous/Next file
+REVIEW MODE
+───────────
+j/k, Up/Down     Scroll diff stream (or navigate file tree)
+h/l, Left/Right  Switch focus: files <-> stream
+Enter, Space     From summary: enter review mode
+                 From file tree: jump to file in stream
+Tab              Toggle focus between file tree and stream
+[/]              Previous/Next file (jumps in stream)
+G                Jump to end of stream
+g                Jump to start of stream
 PgUp/PgDn        Page up/down
-Home/End         Jump to start/end
+Esc              Go back to summary
 
 VIEWS
 ─────
 1                Summary view
-f                File tree view
+f                Review mode (file tree + diff stream)
 s                Statistics view
 ?                This help screen
 
@@ -45,7 +47,8 @@ TIPS
 ────
 - High-score chunks (>70%) are highlighted in yellow/red
 - Filtered chunks are hidden by default (press 't' to show)
-- Use Tab to toggle the AI analysis pane in diff view
+- The analysis pane shows AI insights for the current chunk
+- Use Tab to switch between file tree and diff stream
 - Statistics show how many lines were filtered and why
 
 Press Esc or ? to close this help"#;

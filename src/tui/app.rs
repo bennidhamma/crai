@@ -5,6 +5,86 @@ use crate::diff::{DiffResult, FileDiff};
 use crate::error::CraiResult;
 use crate::tui::event::{Action, Direction, SubagentAction};
 
+/// Precomputed index for efficient stream navigation
+#[derive(Debug, Clone)]
+pub struct StreamIndex {
+    /// Total lines in the virtual stream
+    pub total_lines: usize,
+    /// Line offset where each file starts in the stream
+    pub file_starts: Vec<usize>,
+    /// Chunk start offsets within each file: chunk_starts[file_idx][chunk_idx]
+    pub chunk_starts: Vec<Vec<usize>>,
+}
+
+impl StreamIndex {
+    /// Build index from diff result
+    pub fn build(diff_result: &DiffResult) -> Self {
+        let mut total_lines = 0;
+        let mut file_starts = Vec::with_capacity(diff_result.files.len());
+        let mut chunk_starts = Vec::with_capacity(diff_result.files.len());
+
+        for file in &diff_result.files {
+            file_starts.push(total_lines);
+
+            // File header: 2 lines (filename + separator)
+            total_lines += 2;
+
+            let mut file_chunk_starts = Vec::with_capacity(file.chunks.len());
+            for chunk in &file.chunks {
+                file_chunk_starts.push(total_lines - file_starts.last().copied().unwrap_or(0));
+
+                // Chunk header: 1 line (@@ ... @@)
+                total_lines += 1;
+
+                // Chunk lines
+                total_lines += chunk.lines.len();
+
+                // Spacing after chunk: 1 line
+                total_lines += 1;
+            }
+            chunk_starts.push(file_chunk_starts);
+
+            // Spacing after file: 1 line
+            total_lines += 1;
+        }
+
+        Self {
+            total_lines,
+            file_starts,
+            chunk_starts,
+        }
+    }
+
+    /// Get stream position for the start of a file
+    pub fn file_to_position(&self, file_index: usize) -> usize {
+        self.file_starts.get(file_index).copied().unwrap_or(0)
+    }
+
+    /// Find which file/chunk a stream position falls into
+    pub fn position_to_context(&self, position: usize) -> Option<(usize, usize)> {
+        // Find file via binary search
+        let file_index = match self.file_starts.binary_search(&position) {
+            Ok(idx) => idx,
+            Err(idx) => idx.saturating_sub(1),
+        };
+
+        if file_index >= self.file_starts.len() {
+            return None;
+        }
+
+        let file_start = self.file_starts[file_index];
+        let relative_pos = position.saturating_sub(file_start);
+
+        // Find chunk within file
+        let chunk_index = match self.chunk_starts[file_index].binary_search(&relative_pos) {
+            Ok(idx) => idx,
+            Err(idx) => idx.saturating_sub(1),
+        };
+
+        Some((file_index, chunk_index.min(self.chunk_starts[file_index].len().saturating_sub(1))))
+    }
+}
+
 pub struct App {
     pub config: Config,
     pub diff_result: DiffResult,
@@ -14,19 +94,23 @@ pub struct App {
     pub should_quit: bool,
     pub status_message: Option<StatusMessage>,
     pub progress: Option<Progress>,
+    pub stream_index: StreamIndex,
 }
 
 #[derive(Debug, Clone)]
 pub enum View {
     Summary,
-    FileTree {
-        selected: usize,
-        scroll_offset: usize,
-    },
-    DiffView {
-        file_index: usize,
-        chunk_index: usize,
-        scroll_offset: usize,
+    /// Main review mode with file tree sidebar and diff stream
+    Review {
+        /// Selected file in tree
+        tree_selected: usize,
+        /// Scroll offset in tree
+        tree_scroll_offset: usize,
+        /// True if file tree has focus, false if stream has focus
+        tree_focused: bool,
+        /// Scroll position in the virtual diff stream
+        stream_scroll_offset: usize,
+        /// Show analysis pane
         show_analysis: bool,
     },
     Stats,
@@ -72,6 +156,7 @@ impl Progress {
 
 impl App {
     pub fn new(config: Config, diff_result: DiffResult) -> Self {
+        let stream_index = StreamIndex::build(&diff_result);
         Self {
             config,
             diff_result,
@@ -81,6 +166,7 @@ impl App {
             should_quit: false,
             status_message: None,
             progress: None,
+            stream_index,
         }
     }
 
@@ -149,9 +235,12 @@ impl App {
                 self.view = View::Summary;
             }
             Action::FileTree => {
-                self.view = View::FileTree {
-                    selected: 0,
-                    scroll_offset: 0,
+                self.view = View::Review {
+                    tree_selected: 0,
+                    tree_scroll_offset: 0,
+                    tree_focused: true,
+                    stream_scroll_offset: 0,
+                    show_analysis: true,
                 };
             }
             Action::Stats => {
@@ -204,11 +293,7 @@ impl App {
         self.view = match &self.view {
             View::Help => View::Summary,
             View::Stats => View::Summary,
-            View::FileTree { .. } => View::Summary,
-            View::DiffView { file_index, .. } => View::FileTree {
-                selected: *file_index,
-                scroll_offset: 0,
-            },
+            View::Review { .. } => View::Summary,
             View::Summary | View::QuitConfirm => {
                 self.view = View::QuitConfirm;
                 return;
@@ -218,83 +303,79 @@ impl App {
 
     fn handle_navigation(&mut self, dir: Direction) {
         match &mut self.view {
-            View::FileTree { selected, scroll_offset } => {
-                let file_count = self.diff_result.files.len();
-                match dir {
-                    Direction::Up => {
-                        *selected = selected.saturating_sub(1);
-                        if *selected < *scroll_offset {
-                            *scroll_offset = *selected;
-                        }
-                    }
-                    Direction::Down => {
-                        *selected = (*selected + 1).min(file_count.saturating_sub(1));
-                    }
-                    Direction::Home => {
-                        *selected = 0;
-                        *scroll_offset = 0;
-                    }
-                    Direction::End => {
-                        *selected = file_count.saturating_sub(1);
-                    }
-                    Direction::PageUp => {
-                        *selected = selected.saturating_sub(10);
-                        if *selected < *scroll_offset {
-                            *scroll_offset = *selected;
-                        }
-                    }
-                    Direction::PageDown => {
-                        *selected = (*selected + 10).min(file_count.saturating_sub(1));
-                    }
-                    _ => {}
-                }
-            }
-            View::DiffView {
-                file_index,
-                chunk_index,
-                scroll_offset,
+            View::Review {
+                tree_selected,
+                tree_scroll_offset,
+                tree_focused,
+                stream_scroll_offset,
                 ..
             } => {
-                let file = &self.diff_result.files[*file_index];
-                let chunk_count = file.chunks.len();
-
-                match dir {
-                    Direction::Up => {
-                        if *scroll_offset > 0 {
-                            *scroll_offset -= 1;
-                        } else if *chunk_index > 0 {
-                            *chunk_index -= 1;
-                            *scroll_offset = 0;
+                if *tree_focused {
+                    // Navigate file tree
+                    let file_count = self.diff_result.files.len();
+                    match dir {
+                        Direction::Up => {
+                            *tree_selected = tree_selected.saturating_sub(1);
+                            if *tree_selected < *tree_scroll_offset {
+                                *tree_scroll_offset = *tree_selected;
+                            }
+                        }
+                        Direction::Down => {
+                            *tree_selected = (*tree_selected + 1).min(file_count.saturating_sub(1));
+                        }
+                        Direction::Home => {
+                            *tree_selected = 0;
+                            *tree_scroll_offset = 0;
+                        }
+                        Direction::End => {
+                            *tree_selected = file_count.saturating_sub(1);
+                        }
+                        Direction::PageUp => {
+                            *tree_selected = tree_selected.saturating_sub(10);
+                            if *tree_selected < *tree_scroll_offset {
+                                *tree_scroll_offset = *tree_selected;
+                            }
+                        }
+                        Direction::PageDown => {
+                            *tree_selected = (*tree_selected + 10).min(file_count.saturating_sub(1));
+                        }
+                        Direction::Left => {
+                            // Stay in tree, do nothing
+                        }
+                        Direction::Right => {
+                            // Move focus to stream
+                            *tree_focused = false;
                         }
                     }
-                    Direction::Down => {
-                        *scroll_offset += 1;
-                    }
-                    Direction::Left => {
-                        if *chunk_index > 0 {
-                            *chunk_index -= 1;
-                            *scroll_offset = 0;
+                } else {
+                    // Navigate stream
+                    let max_scroll = self.stream_index.total_lines.saturating_sub(1);
+                    match dir {
+                        Direction::Up => {
+                            *stream_scroll_offset = stream_scroll_offset.saturating_sub(1);
                         }
-                    }
-                    Direction::Right => {
-                        if *chunk_index + 1 < chunk_count {
-                            *chunk_index += 1;
-                            *scroll_offset = 0;
+                        Direction::Down => {
+                            *stream_scroll_offset = (*stream_scroll_offset + 1).min(max_scroll);
                         }
-                    }
-                    Direction::PageUp => {
-                        *scroll_offset = scroll_offset.saturating_sub(20);
-                    }
-                    Direction::PageDown => {
-                        *scroll_offset += 20;
-                    }
-                    Direction::Home => {
-                        *chunk_index = 0;
-                        *scroll_offset = 0;
-                    }
-                    Direction::End => {
-                        *chunk_index = chunk_count.saturating_sub(1);
-                        *scroll_offset = 0;
+                        Direction::PageUp => {
+                            *stream_scroll_offset = stream_scroll_offset.saturating_sub(20);
+                        }
+                        Direction::PageDown => {
+                            *stream_scroll_offset = (*stream_scroll_offset + 20).min(max_scroll);
+                        }
+                        Direction::Home => {
+                            *stream_scroll_offset = 0;
+                        }
+                        Direction::End => {
+                            *stream_scroll_offset = max_scroll;
+                        }
+                        Direction::Left => {
+                            // Move focus to tree
+                            *tree_focused = true;
+                        }
+                        Direction::Right => {
+                            // Stay in stream, do nothing
+                        }
                     }
                 }
             }
@@ -303,21 +384,27 @@ impl App {
     }
 
     fn handle_select(&mut self) {
-        match &self.view {
+        match &mut self.view {
             View::Summary => {
-                self.view = View::FileTree {
-                    selected: 0,
-                    scroll_offset: 0,
+                // Enter review mode
+                self.view = View::Review {
+                    tree_selected: 0,
+                    tree_scroll_offset: 0,
+                    tree_focused: false, // Start with stream focused
+                    stream_scroll_offset: 0,
+                    show_analysis: true,
                 };
             }
-            View::FileTree { selected, .. } => {
-                if *selected < self.diff_result.files.len() {
-                    self.view = View::DiffView {
-                        file_index: *selected,
-                        chunk_index: 0,
-                        scroll_offset: 0,
-                        show_analysis: true,
-                    };
+            View::Review {
+                tree_selected,
+                tree_focused,
+                stream_scroll_offset,
+                ..
+            } => {
+                if *tree_focused {
+                    // Jump stream to selected file
+                    *stream_scroll_offset = self.stream_index.file_to_position(*tree_selected);
+                    *tree_focused = false; // Move focus to stream
                 }
             }
             View::Help => {
@@ -328,24 +415,32 @@ impl App {
     }
 
     fn handle_tab(&mut self) {
-        if let View::DiffView { show_analysis, .. } = &mut self.view {
-            *show_analysis = !*show_analysis;
+        if let View::Review { tree_focused, show_analysis, .. } = &mut self.view {
+            // Tab toggles focus between tree and stream
+            *tree_focused = !*tree_focused;
+            // Double-tap tab (when already on tree) could toggle analysis
+            // For now, just toggle focus
+            let _ = show_analysis; // Silence unused warning
         }
     }
 
     fn navigate_file(&mut self, delta: i32) {
-        if let View::DiffView { file_index, chunk_index, scroll_offset, show_analysis: _ } = &mut self.view {
+        if let View::Review {
+            tree_selected,
+            stream_scroll_offset,
+            ..
+        } = &mut self.view
+        {
             let file_count = self.diff_result.files.len();
             let new_index = if delta > 0 {
-                (*file_index + delta as usize).min(file_count.saturating_sub(1))
+                (*tree_selected + delta as usize).min(file_count.saturating_sub(1))
             } else {
-                file_index.saturating_sub((-delta) as usize)
+                tree_selected.saturating_sub((-delta) as usize)
             };
 
-            if new_index != *file_index {
-                *file_index = new_index;
-                *chunk_index = 0;
-                *scroll_offset = 0;
+            if new_index != *tree_selected {
+                *tree_selected = new_index;
+                *stream_scroll_offset = self.stream_index.file_to_position(new_index);
             }
         }
     }
@@ -358,23 +453,29 @@ impl App {
 
     pub fn current_file(&self) -> Option<&FileDiff> {
         match &self.view {
-            View::DiffView { file_index, .. } => self.diff_result.files.get(*file_index),
-            View::FileTree { selected, .. } => self.diff_result.files.get(*selected),
+            View::Review { tree_selected, .. } => self.diff_result.files.get(*tree_selected),
+            _ => None,
+        }
+    }
+
+    /// Get the current file and chunk index based on stream scroll position
+    pub fn current_context(&self) -> Option<(usize, usize)> {
+        match &self.view {
+            View::Review { stream_scroll_offset, .. } => {
+                self.stream_index.position_to_context(*stream_scroll_offset)
+            }
             _ => None,
         }
     }
 
     pub fn current_chunk_score(&self) -> Option<&ChunkScore> {
-        match &self.view {
-            View::DiffView { file_index, chunk_index, .. } => {
-                self.scoring_result.as_ref().and_then(|sr| {
-                    sr.scores.iter().find(|s| {
-                        s.file_index == *file_index && s.chunk_index == *chunk_index
-                    })
+        self.current_context().and_then(|(file_index, chunk_index)| {
+            self.scoring_result.as_ref().and_then(|sr| {
+                sr.scores.iter().find(|s| {
+                    s.file_index == file_index && s.chunk_index == chunk_index
                 })
-            }
-            _ => None,
-        }
+            })
+        })
     }
 
     pub fn current_analysis(&self) -> Option<&ControversialityResponse> {
