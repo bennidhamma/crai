@@ -1,6 +1,8 @@
 # crai
 
-AI-powered code review tool with a terminal UI.
+Code review is tedious. Most diffs are full of noise—imports, formatting, lock files, trivial refactors. The interesting parts (logic changes, security implications, subtle bugs) get buried.
+
+crai uses AI to score each chunk of a diff by how "controversial" or review-worthy it is, then filters out the noise so you can focus on what actually matters. It's a TUI that shows you diffs alongside AI analysis, helping you review code faster and catch things you might miss.
 
 ## Features
 
