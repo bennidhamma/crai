@@ -1,0 +1,122 @@
+# CRAI - Code Review AI Configuration
+
+[general]
+# Path to the git repository (defaults to current directory)
+repository_path = "."
+
+# Default base branch to compare against
+default_base_branch = "main"
+
+# Directory for caching AI responses
+cache_directory = "~/.cache/crai"
+
+# Log level: error, warn, info, debug, trace
+log_level = "info"
+
+[ai]
+# AI provider: claude, kiro, openai, custom
+provider = "claude"
+
+# Model to use (optional, uses provider default if not specified)
+# model = "sonnet"
+
+# Timeout for AI requests in seconds
+timeout_seconds = 60
+
+# Maximum retry attempts for failed requests
+max_retries = 3
+
+# Number of concurrent AI requests
+concurrent_requests = 4
+
+# Path to custom CLI tool (required if provider = "custom")
+# custom_cli_path = "/usr/local/bin/my-ai-cli"
+
+[diff]
+# Path to difftastic binary
+difft_path = "difft"
+
+# Number of context lines around changes
+context_lines = 3
+
+# Ignore whitespace-only changes in diff
+ignore_whitespace = false
+
+# Ignore comment changes in diff
+ignore_comments = false
+
+# Maximum file size to analyze (bytes)
+max_file_size_bytes = 1000000
+
+[filters]
+# Automatically filter whitespace-only changes
+auto_filter_whitespace = true
+
+# Automatically filter import statement changes
+auto_filter_imports = true
+
+# Automatically filter file renames without content changes
+auto_filter_renames = true
+
+# Automatically filter auto-generated files
+auto_filter_generated = true
+
+# Patterns for identifying auto-generated files (regex)
+generated_file_patterns = [
+    ".*\\.lock$",
+    ".*\\.generated\\..*",
+    ".*/generated/.*",
+    ".*/vendor/.*",
+    "package-lock\\.json$",
+    "yarn\\.lock$",
+    "Cargo\\.lock$",
+    ".*\\.min\\.js$",
+    ".*\\.min\\.css$",
+]
+
+# Controversiality threshold (0.0 - 1.0)
+# Chunks scoring below this are filtered out
+controversiality_threshold = 0.3
+
+# Import patterns by language (regex)
+[filters.import_patterns]
+rust = ["^\\s*use\\s+", "^\\s*mod\\s+\\w+;"]
+python = ["^\\s*import\\s+", "^\\s*from\\s+\\S+\\s+import\\s+"]
+javascript = ["^\\s*import\\s+.+\\s+from\\s+", "^\\s*const\\s+.+=\\s*require\\(", "^\\s*export\\s+\\{"]
+typescript = ["^\\s*import\\s+.+\\s+from\\s+", "^\\s*import\\s+type\\s+", "^\\s*export\\s+\\{"]
+go = ["^\\s*import\\s+\"", "^\\s*import\\s+\\("]
+java = ["^\\s*import\\s+", "^\\s*package\\s+"]
+
+[tui]
+# Color scheme: dark, light, high_contrast
+color_scheme = "dark"
+
+# Show line numbers in diff view
+show_line_numbers = true
+
+# Tab width for displaying diffs
+diff_tab_width = 4
+
+# Width of analysis pane (percentage)
+analysis_pane_width_percent = 35
+
+[subagents.security]
+# Enable security-focused review
+enabled = true
+
+# Model override for this subagent
+# model = "opus"
+
+# Custom prompt to append
+# custom_prompt = "Pay special attention to authentication and authorization"
+
+# Only run on files with scores above this threshold
+priority_threshold = 0.5
+
+[subagents.performance]
+enabled = true
+priority_threshold = 0.6
+
+[subagents.usability]
+enabled = false
+priority_threshold = 0.7

@@ -1,0 +1,120 @@
+use crate::error::{CraiError, CraiResult};
+use crossterm::event::{self, Event as CrosstermEvent, KeyCode, KeyEvent, KeyModifiers};
+use std::time::Duration;
+
+#[derive(Debug, Clone, Copy)]
+pub enum Event {
+    Key(KeyEvent),
+    Tick,
+    Resize(u16, u16),
+}
+
+pub struct EventHandler {
+    tick_rate: Duration,
+}
+
+impl EventHandler {
+    pub fn new(tick_rate_ms: u64) -> Self {
+        Self {
+            tick_rate: Duration::from_millis(tick_rate_ms),
+        }
+    }
+
+    pub fn next(&self) -> CraiResult<Event> {
+        if event::poll(self.tick_rate).map_err(|e| CraiError::Tui(e.to_string()))? {
+            match event::read().map_err(|e| CraiError::Tui(e.to_string()))? {
+                CrosstermEvent::Key(key) => Ok(Event::Key(key)),
+                CrosstermEvent::Resize(w, h) => Ok(Event::Resize(w, h)),
+                _ => Ok(Event::Tick),
+            }
+        } else {
+            Ok(Event::Tick)
+        }
+    }
+}
+
+/// Key binding definitions
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    Quit,
+    ForceQuit,
+    ConfirmYes,
+    Help,
+    Navigate(Direction),
+    Select,
+    Back,
+    Tab,
+    Approve,
+    Discuss,
+    RequestChanges,
+    AddNote,
+    ToggleFilter,
+    RunSubagent(SubagentAction),
+    Stats,
+    FileTree,
+    Summary,
+    NextFile,
+    PrevFile,
+    None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Up,
+    Down,
+    Left,
+    Right,
+    PageUp,
+    PageDown,
+    Home,
+    End,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubagentAction {
+    Security,
+    Performance,
+    Usability,
+}
+
+impl Action {
+    pub fn from_key(key: KeyEvent) -> Self {
+        match key.code {
+            KeyCode::Char('q') => {
+                if key.modifiers.contains(KeyModifiers::CONTROL) {
+                    Action::ForceQuit
+                } else {
+                    Action::Quit
+                }
+            }
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::ForceQuit,
+            KeyCode::Char('?') => Action::Help,
+            KeyCode::Char('j') | KeyCode::Down => Action::Navigate(Direction::Down),
+            KeyCode::Char('k') | KeyCode::Up => Action::Navigate(Direction::Up),
+            KeyCode::Char('h') | KeyCode::Left => Action::Navigate(Direction::Left),
+            KeyCode::Char('l') | KeyCode::Right => Action::Navigate(Direction::Right),
+            KeyCode::PageUp => Action::Navigate(Direction::PageUp),
+            KeyCode::PageDown => Action::Navigate(Direction::PageDown),
+            KeyCode::Home => Action::Navigate(Direction::Home),
+            KeyCode::End => Action::Navigate(Direction::End),
+            KeyCode::Enter | KeyCode::Char(' ') => Action::Select,
+            KeyCode::Esc => Action::Back,
+            KeyCode::Tab => Action::Tab,
+            KeyCode::Char('a') => Action::Approve,
+            KeyCode::Char('d') => Action::Discuss,
+            KeyCode::Char('r') => Action::RequestChanges,
+            KeyCode::Char('n') => Action::AddNote,
+            KeyCode::Char('f') => Action::FileTree,
+            KeyCode::Char('s') => Action::Stats,
+            KeyCode::Char('S') => Action::RunSubagent(SubagentAction::Security),
+            KeyCode::Char('P') => Action::RunSubagent(SubagentAction::Performance),
+            KeyCode::Char('U') => Action::RunSubagent(SubagentAction::Usability),
+            KeyCode::Char(']') => Action::NextFile,
+            KeyCode::Char('[') => Action::PrevFile,
+            KeyCode::Char('t') => Action::ToggleFilter,
+            KeyCode::Char('y') => Action::ConfirmYes,
+            KeyCode::Char('1') => Action::Summary,
+            _ => Action::None,
+        }
+    }
+}
