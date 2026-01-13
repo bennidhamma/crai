@@ -4,29 +4,29 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 pub fn render(frame: &mut Frame, area: Rect) {
     let help_text = r#"CRAI - Code Review AI Help
 
-REVIEW MODE
-───────────
-j/k, Up/Down     Scroll diff stream (or navigate file tree)
-h/l, Left/Right  Switch focus: files <-> stream
-Enter, Space     From summary: enter review mode
-                 From file tree: jump to file in stream
-Tab              Toggle focus between file tree and stream
-[/]              Previous/Next file (jumps in stream)
-G                Jump to end of stream
-g                Jump to start of stream
-PgUp/PgDn        Page up/down
-Esc              Go back to summary
-
-VIEWS
-─────
+QUICK ACCESS
+────────────
 1                Summary view
-f                Review mode (file tree + diff stream)
+2                Focus file tree
+3                Focus highlights stream
 s                Statistics view
 ?                This help screen
 
+REVIEW MODE
+───────────
+j/k, Up/Down     Scroll highlights (or navigate file tree)
+h/l, Left/Right  Switch focus: files <-> stream
+Tab              Toggle focus between panes
+Enter            From file tree: jump to file in stream
+[/]              Previous/Next highlight
+G                Jump to end
+g                Jump to start
+PgUp/PgDn        Page up/down
+Esc              Go back to summary
+
 REVIEW ACTIONS
 ──────────────
-a                Approve current chunk
+a                Approve current highlight
 d                Mark for discussion
 r                Request changes
 n                Add note
@@ -43,13 +43,13 @@ GENERAL
 q                Quit / Back
 Ctrl+q, Ctrl+c   Force quit
 
-TIPS
-────
-- High-score chunks (>70%) are highlighted in yellow/red
-- Filtered chunks are hidden by default (press 't' to show)
-- The analysis pane shows AI insights for the current chunk
-- Use Tab to switch between file tree and diff stream
-- Statistics show how many lines were filtered and why
+ABOUT THE STREAM
+────────────────
+The highlights stream shows only reviewable chunks:
+- Each highlight includes side-by-side diff
+- AI analysis is shown inline below each diff
+- Filtered/low-score chunks are hidden
+- Use j/k to scroll through all highlights
 
 Press Esc or ? to close this help"#;
 

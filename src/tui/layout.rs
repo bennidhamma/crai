@@ -74,14 +74,14 @@ impl LayoutManager {
         tree_scroll_offset: usize,
         tree_focused: bool,
         stream_scroll_offset: usize,
-        show_analysis: bool,
+        _show_analysis: bool, // Analysis is now inline in the stream
     ) {
         // Split into sidebar + main content
         let horizontal_split = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
                 Constraint::Length(30), // Fixed-width sidebar
-                Constraint::Min(0),     // Main content
+                Constraint::Min(0),     // Main content (highlights stream)
             ])
             .split(area);
 
@@ -95,28 +95,8 @@ impl LayoutManager {
             tree_focused,
         );
 
-        // Main pane: optionally split for analysis
-        let main_area = if show_analysis {
-            let vertical_split = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Min(10),
-                    Constraint::Length(12),
-                ])
-                .split(horizontal_split[1]);
-
-            // Render analysis at bottom based on current scroll position
-            if let Some((file_idx, chunk_idx)) = app.current_context() {
-                views::analysis::render_compact(frame, vertical_split[1], app, file_idx, chunk_idx);
-            }
-
-            vertical_split[0]
-        } else {
-            horizontal_split[1]
-        };
-
-        // Render stream view
-        views::stream::render(frame, main_area, app, stream_scroll_offset);
+        // Render highlights stream (includes inline analysis)
+        views::stream::render(frame, horizontal_split[1], app, stream_scroll_offset);
     }
 
     fn render_quit_dialog(frame: &mut Frame, area: Rect) {
@@ -167,16 +147,16 @@ impl LayoutManager {
             (format!(" {} ", msg.text), Style::default().bg(bg).fg(fg))
         } else {
             let keybinds = match &app.view {
-                View::Summary => "[Enter] Review [s] Stats [?] Help [q] Quit",
+                View::Summary => "[Enter] Review [1] Summary [s] Stats [?] Help [q] Quit",
                 View::Review { tree_focused, .. } => {
                     if *tree_focused {
-                        "[j/k] Navigate [Enter] Jump [Tab/l] Stream [Esc] Back"
+                        "[j/k] Navigate [Enter] Jump [3/Tab] Stream [1] Summary [Esc] Back"
                     } else {
-                        "[j/k] Scroll [G/gg] End/Top [Tab/h] Files []/[] Prev/Next File [Esc] Back"
+                        "[j/k] Scroll [G/g] End/Top [2/Tab] Files []/[] Prev/Next [1] Summary"
                     }
                 }
-                View::Stats => "[Esc] Back [q] Quit",
-                View::Help => "[Esc] Back [q] Quit",
+                View::Stats => "[1] Summary [Esc] Back [q] Quit",
+                View::Help => "[1] Summary [Esc] Back [q] Quit",
                 View::QuitConfirm => "[q/y/Enter] Confirm quit [any key] Cancel",
             };
 

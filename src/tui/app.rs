@@ -281,6 +281,40 @@ impl App {
             Action::ToggleFilter => {
                 // Toggle showing filtered chunks
             }
+            Action::FocusTree => {
+                // '2' - go to review mode with tree focused
+                match &mut self.view {
+                    View::Review { tree_focused, .. } => {
+                        *tree_focused = true;
+                    }
+                    _ => {
+                        self.view = View::Review {
+                            tree_selected: 0,
+                            tree_scroll_offset: 0,
+                            tree_focused: true,
+                            stream_scroll_offset: 0,
+                            show_analysis: true,
+                        };
+                    }
+                }
+            }
+            Action::FocusStream => {
+                // '3' - go to review mode with stream focused
+                match &mut self.view {
+                    View::Review { tree_focused, .. } => {
+                        *tree_focused = false;
+                    }
+                    _ => {
+                        self.view = View::Review {
+                            tree_selected: 0,
+                            tree_scroll_offset: 0,
+                            tree_focused: false,
+                            stream_scroll_offset: 0,
+                            show_analysis: true,
+                        };
+                    }
+                }
+            }
             Action::ConfirmYes => {
                 // Only used in QuitConfirm dialog, handled above
             }

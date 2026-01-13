@@ -52,6 +52,8 @@ pub enum Action {
     RunSubagent(SubagentAction),
     Stats,
     FileTree,
+    FocusTree,
+    FocusStream,
     Summary,
     NextFile,
     PrevFile,
@@ -114,6 +116,8 @@ impl Action {
             KeyCode::Char('t') => Action::ToggleFilter,
             KeyCode::Char('y') => Action::ConfirmYes,
             KeyCode::Char('1') => Action::Summary,
+            KeyCode::Char('2') => Action::FocusTree,
+            KeyCode::Char('3') => Action::FocusStream,
             _ => Action::None,
         }
     }
