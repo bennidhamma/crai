@@ -30,7 +30,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, scroll_offset: usize) {
 
     let paragraph = Paragraph::new(lines).block(
         Block::default()
-            .title(" Review Highlights ")
+            .title(" (3) Review Highlights ")
             .title_bottom(Line::from(scroll_indicator).right_aligned())
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Cyan)),
@@ -49,7 +49,7 @@ fn render_empty_state(frame: &mut Frame, area: Rect, app: &App) {
     let paragraph = Paragraph::new(message)
         .block(
             Block::default()
-                .title(" Review Highlights ")
+                .title(" (3) Review Highlights ")
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::DarkGray)),
         )

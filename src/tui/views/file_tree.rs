@@ -78,7 +78,7 @@ pub fn render_sidebar(
 
     let list = List::new(items).block(
         Block::default()
-            .title(format!(" Files ({}) ", app.diff_result.files.len()))
+            .title(format!(" (2) Files ({}) ", app.diff_result.files.len()))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color)),
     );

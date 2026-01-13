@@ -95,7 +95,13 @@ impl Action {
             KeyCode::Char('k') | KeyCode::Up => Action::Navigate(Direction::Up),
             KeyCode::Char('h') | KeyCode::Left => Action::Navigate(Direction::Left),
             KeyCode::Char('l') | KeyCode::Right => Action::Navigate(Direction::Right),
+            KeyCode::PageUp | KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Action::Navigate(Direction::PageUp)
+            }
             KeyCode::PageUp => Action::Navigate(Direction::PageUp),
+            KeyCode::PageDown | KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Action::Navigate(Direction::PageDown)
+            }
             KeyCode::PageDown => Action::Navigate(Direction::PageDown),
             KeyCode::Home | KeyCode::Char('g') => Action::Navigate(Direction::Home), // g or gg for top
             KeyCode::End | KeyCode::Char('G') => Action::Navigate(Direction::End),   // G for bottom
@@ -106,7 +112,6 @@ impl Action {
             KeyCode::Char('d') => Action::Discuss,
             KeyCode::Char('r') => Action::RequestChanges,
             KeyCode::Char('n') => Action::AddNote,
-            KeyCode::Char('f') => Action::FileTree,
             KeyCode::Char('s') => Action::Stats,
             KeyCode::Char('S') => Action::RunSubagent(SubagentAction::Security),
             KeyCode::Char('P') => Action::RunSubagent(SubagentAction::Performance),

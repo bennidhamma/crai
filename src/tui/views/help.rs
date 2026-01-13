@@ -21,7 +21,8 @@ Enter            From file tree: jump to file in stream
 [/]              Previous/Next highlight
 G                Jump to end
 g                Jump to start
-PgUp/PgDn        Page up/down
+Ctrl+F, PgDn     Page down
+Ctrl+B, PgUp     Page up
 Esc              Go back to summary
 
 REVIEW ACTIONS
