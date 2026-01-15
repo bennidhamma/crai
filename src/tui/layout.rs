@@ -43,6 +43,9 @@ impl LayoutManager {
                 tree_focused,
                 stream_scroll_offset,
                 show_analysis,
+                sort_mode,
+                expanded_files,
+                selected_highlight,
             } => {
                 Self::render_review(
                     frame,
@@ -53,6 +56,9 @@ impl LayoutManager {
                     *tree_focused,
                     *stream_scroll_offset,
                     *show_analysis,
+                    *sort_mode,
+                    expanded_files,
+                    *selected_highlight,
                 );
             }
             View::Stats => views::stats::render(frame, area, app),
@@ -75,6 +81,9 @@ impl LayoutManager {
         tree_focused: bool,
         stream_scroll_offset: usize,
         _show_analysis: bool, // Analysis is now inline in the stream
+        sort_mode: crate::tui::event::StreamSortMode,
+        expanded_files: &std::collections::HashSet<usize>,
+        selected_highlight: Option<usize>,
     ) {
         // Split into sidebar + main content
         let horizontal_split = Layout::default()
@@ -93,10 +102,12 @@ impl LayoutManager {
             tree_selected,
             tree_scroll_offset,
             tree_focused,
+            expanded_files,
+            selected_highlight,
         );
 
         // Render highlights stream (includes inline analysis)
-        views::stream::render(frame, horizontal_split[1], app, stream_scroll_offset);
+        views::stream::render(frame, horizontal_split[1], app, stream_scroll_offset, sort_mode);
     }
 
     fn render_quit_dialog(frame: &mut Frame, area: Rect) {
@@ -150,9 +161,9 @@ impl LayoutManager {
                 View::Summary => "[Enter] Review [1] Summary [s] Stats [?] Help [q] Quit",
                 View::Review { tree_focused, .. } => {
                     if *tree_focused {
-                        "[j/k] Navigate [Enter] Jump [3/Tab] Stream [1] Summary [Esc] Back"
+                        "[j/k] Navigate [Enter] Expand [3/Tab] Stream [1] Summary [Esc] Back"
                     } else {
-                        "[j/k] Scroll [G/g] End/Top [2/Tab] Files []/[] Prev/Next [1] Summary"
+                        "[j/k] Scroll [[/]] Highlights [o] Sort [2/Tab] Files [1] Summary"
                     }
                 }
                 View::Stats => "[1] Summary [Esc] Back [q] Quit",

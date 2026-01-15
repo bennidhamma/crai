@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use crai::ai::provider::{AiProviderFactory, ScoringContext, SummaryContext};
-use crai::ai::scoring::ScoringOrchestrator;
+use crai::ai::scoring::{ScoringOrchestrator, ScoringUpdate};
 use crai::config::{self, Config};
 use crai::diff::filter::ChunkFilter;
 use crai::diff::git::GitOperations;
@@ -198,8 +198,8 @@ async fn run_summary(cli: &Cli, config: &Config) -> CraiResult<()> {
         println!("\nRunning AI analysis...");
 
         let result = orchestrator
-            .score_all(&diff_result.files, &ScoringContext::default(), |progress| {
-                eprint!("\rScoring: {}/{}", progress.completed, progress.total);
+            .score_all(&diff_result.files, &ScoringContext::default(), |update: ScoringUpdate| {
+                eprint!("\rScoring: {}/{}", update.progress.completed, update.progress.total);
             })
             .await?;
 
@@ -306,18 +306,67 @@ async fn run_interactive(cli: &Cli, config: &Config) -> CraiResult<()> {
             config.ai.concurrent_requests,
         );
 
-        // Run scoring with progress display
+        // Run scoring with real-time progress and findings display
         let mut first_progress = true;
+        let mut highlights_found = 0usize;
         let result = orchestrator
-            .score_all(&files, &ScoringContext::default(), |progress| {
+            .score_all(&files, &ScoringContext::default(), |update: ScoringUpdate| {
                 if first_progress {
                     println!("done");
-                    print!("  AI scoring: ");
-                    let _ = std::io::stdout().flush();
+                    println!("  AI scoring chunks...\n");
                     first_progress = false;
                 }
+
+                let progress = &update.progress;
+
+                // Show finding details if we have one
+                if let Some(finding) = &update.finding {
+                    // Clear the progress line and show finding
+                    let status = if finding.is_filtered {
+                        "\x1b[90m[filtered]\x1b[0m"
+                    } else {
+                        highlights_found += 1;
+                        match finding.score {
+                            s if s >= 0.7 => "\x1b[91m[review]\x1b[0m  ",
+                            s if s >= 0.5 => "\x1b[93m[notable]\x1b[0m ",
+                            _ => "\x1b[92m[routine]\x1b[0m ",
+                        }
+                    };
+
+                    // Truncate reasoning to fit on one line (char-aware for UTF-8)
+                    let reasoning = finding.reasoning.replace('\n', " ");
+                    let max_reason_chars = 60;
+                    let truncated_reason: String = if reasoning.chars().count() > max_reason_chars {
+                        format!("{}...", reasoning.chars().take(max_reason_chars).collect::<String>())
+                    } else {
+                        reasoning
+                    };
+
+                    // Truncate file path if too long (char-aware for UTF-8)
+                    let max_path_chars = 40;
+                    let file_display = if finding.file_path.chars().count() > max_path_chars {
+                        let skip = finding.file_path.chars().count() - max_path_chars + 3;
+                        format!("...{}", finding.file_path.chars().skip(skip).collect::<String>())
+                    } else {
+                        finding.file_path.clone()
+                    };
+
+                    println!(
+                        "  {} {:>3.0}% {} {}",
+                        status,
+                        finding.score * 100.0,
+                        file_display,
+                        truncated_reason
+                    );
+                }
+
+                // Show progress bar
+                let bar_width = 30;
+                let filled = (progress.percentage() / 100.0 * bar_width as f64) as usize;
+                let bar: String = "█".repeat(filled) + &"░".repeat(bar_width - filled);
                 eprint!(
-                    "\r  AI scoring: [{:>3}/{:>3}] {:.0}%   ",
+                    "\r  Progress: [{}] {}/{} ({:.0}%)   ",
+                    bar,
                     progress.completed,
                     progress.total,
                     progress.percentage()
@@ -330,9 +379,8 @@ async fn run_interactive(cli: &Cli, config: &Config) -> CraiResult<()> {
             // No AI scoring was done (all filtered)
             println!("done (all chunks filtered)");
         } else {
-            eprintln!("\r  AI scoring: [{}/{}] 100% - Done!      ",
-                result.scores.iter().filter(|s| s.response.is_some()).count(),
-                result.scores.len() - result.stats.filtered_chunks as usize);
+            eprintln!(); // Clear progress line
+            println!("\n  Scoring complete: {} highlights found", highlights_found);
         }
 
         println!(
@@ -379,7 +427,8 @@ async fn run_interactive(cli: &Cli, config: &Config) -> CraiResult<()> {
                 app.handle_action(action)?;
             }
             Event::Resize(_, _) => {
-                // Terminal will handle resize
+                // Clear and force full redraw on terminal resize
+                terminal.clear()?;
             }
             Event::Tick => {
                 // Could update progress here

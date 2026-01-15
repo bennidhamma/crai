@@ -55,9 +55,18 @@ pub enum Action {
     FocusTree,
     FocusStream,
     Summary,
-    NextFile,
-    PrevFile,
+    NextHighlight,
+    PrevHighlight,
+    ToggleSortMode,
     None,
+}
+
+/// Sort mode for the highlights stream
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StreamSortMode {
+    #[default]
+    ByScore,
+    ByFile,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,9 +125,10 @@ impl Action {
             KeyCode::Char('S') => Action::RunSubagent(SubagentAction::Security),
             KeyCode::Char('P') => Action::RunSubagent(SubagentAction::Performance),
             KeyCode::Char('U') => Action::RunSubagent(SubagentAction::Usability),
-            KeyCode::Char(']') => Action::NextFile,
-            KeyCode::Char('[') => Action::PrevFile,
+            KeyCode::Char(']') => Action::NextHighlight,
+            KeyCode::Char('[') => Action::PrevHighlight,
             KeyCode::Char('t') => Action::ToggleFilter,
+            KeyCode::Char('o') => Action::ToggleSortMode,
             KeyCode::Char('y') => Action::ConfirmYes,
             KeyCode::Char('1') => Action::Summary,
             KeyCode::Char('2') => Action::FocusTree,

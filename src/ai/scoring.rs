@@ -1,7 +1,7 @@
 use crate::ai::provider::{AiProvider, ScoringContext};
 use crate::ai::schema::ControversialityResponse;
 use crate::diff::chunk::{ChunkId, DiffChunk, FileDiff, LineKind};
-use crate::diff::filter::{ChunkFilter, FilterResult, FilterStats};
+use crate::diff::filter::{ChunkFilter, FilterReason, FilterResult, FilterStats};
 use crate::error::CraiResult;
 use futures::stream::{self, StreamExt};
 use std::sync::Arc;
@@ -33,7 +33,7 @@ impl ScoringOrchestrator {
         mut progress_callback: F,
     ) -> CraiResult<ScoringResult>
     where
-        F: FnMut(ScoringProgress) + Send,
+        F: FnMut(ScoringUpdate) + Send,
     {
         let mut all_scores = Vec::new();
         let mut chunks_to_score = Vec::new();
@@ -69,10 +69,12 @@ impl ScoringOrchestrator {
         let mut completed = 0;
 
         // Second pass: AI scoring for non-filtered chunks
-        let scores: Vec<_> = stream::iter(chunks_to_score)
+        // Process results as they stream in for real-time feedback
+        let mut score_stream = stream::iter(chunks_to_score)
             .map(|(file_idx, chunk_idx, file, chunk)| {
                 let provider = Arc::clone(&self.provider);
                 let ctx = context.clone();
+                let file_path = file.path.to_string_lossy().to_string();
                 async move {
                     let diff_text = chunk_to_diff_text(chunk);
                     let language = file
@@ -83,57 +85,77 @@ impl ScoringOrchestrator {
                     let response = provider
                         .score_controversiality(
                             &diff_text,
-                            &file.path.to_string_lossy(),
+                            &file_path,
                             language,
                             &ctx,
                         )
                         .await;
 
-                    (file_idx, chunk_idx, chunk.id, response)
+                    (file_idx, chunk_idx, chunk.id, file_path, response)
                 }
             })
-            .buffer_unordered(self.concurrent_requests)
-            .collect()
-            .await;
+            .buffer_unordered(self.concurrent_requests);
 
-        for (file_idx, chunk_idx, chunk_id, response) in scores {
+        // Process each result as it completes
+        while let Some((file_idx, chunk_idx, chunk_id, file_path, response)) = score_stream.next().await {
             completed += 1;
-            progress_callback(ScoringProgress { completed, total });
 
-            match response {
+            let (finding, chunk_score) = match response {
                 Ok(resp) => {
                     let filter_result = self.filter.filter_by_score(resp.score);
+                    let is_filtered = filter_result.is_filtered;
 
-                    if filter_result.is_filtered {
+                    if is_filtered {
                         if let Some(reason) = filter_result.reason {
                             let chunk = &files[file_idx].chunks[chunk_idx];
                             stats.add_filtered(reason, chunk.lines.len() as u32);
                         }
                     }
 
-                    all_scores.push(ChunkScore {
+                    let finding = ScoringFinding {
+                        file_path,
+                        file_index: file_idx,
+                        chunk_index: chunk_idx,
+                        score: resp.score,
+                        classification: format!("{}", resp.classification),
+                        reasoning: resp.reasoning.clone(),
+                        is_filtered,
+                    };
+
+                    let score = ChunkScore {
                         file_index: file_idx,
                         chunk_index: chunk_idx,
                         chunk_id,
                         response: Some(resp),
-                        filter_result: if filter_result.is_filtered {
+                        filter_result: if is_filtered {
                             Some(filter_result)
                         } else {
                             None
                         },
-                    });
+                    };
+
+                    (Some(finding), score)
                 }
                 Err(e) => {
                     tracing::warn!("Failed to score chunk {}: {}", chunk_id, e);
-                    all_scores.push(ChunkScore {
+                    let score = ChunkScore {
                         file_index: file_idx,
                         chunk_index: chunk_idx,
                         chunk_id,
                         response: None,
                         filter_result: None,
-                    });
+                    };
+                    (None, score)
                 }
-            }
+            };
+
+            all_scores.push(chunk_score);
+
+            // Send update with finding details
+            progress_callback(ScoringUpdate {
+                progress: ScoringProgress { completed, total },
+                finding,
+            });
         }
 
         stats.filtered_chunks = all_scores
@@ -171,6 +193,16 @@ impl ChunkScore {
         self.filter_result
             .as_ref()
             .map(|f| f.is_filtered)
+            .unwrap_or(false)
+    }
+
+    /// Returns true if filtered by heuristics (whitespace, imports, etc.) but NOT by score threshold
+    pub fn is_heuristic_filtered(&self) -> bool {
+        self.filter_result
+            .as_ref()
+            .map(|f| {
+                f.is_filtered && f.reason != Some(FilterReason::BelowThreshold)
+            })
             .unwrap_or(false)
     }
 
@@ -212,7 +244,7 @@ impl ScoringResult {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ScoringProgress {
     pub completed: usize,
     pub total: usize,
@@ -226,6 +258,26 @@ impl ScoringProgress {
             (self.completed as f64 / self.total as f64) * 100.0
         }
     }
+}
+
+/// Update sent during scoring - includes finding details for real-time display
+#[derive(Debug, Clone)]
+pub struct ScoringUpdate {
+    pub progress: ScoringProgress,
+    /// The finding that was just scored (if successful)
+    pub finding: Option<ScoringFinding>,
+}
+
+/// A single finding from AI scoring
+#[derive(Debug, Clone)]
+pub struct ScoringFinding {
+    pub file_path: String,
+    pub file_index: usize,
+    pub chunk_index: usize,
+    pub score: f64,
+    pub classification: String,
+    pub reasoning: String,
+    pub is_filtered: bool,
 }
 
 fn chunk_to_diff_text(chunk: &DiffChunk) -> String {

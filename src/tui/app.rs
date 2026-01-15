@@ -3,7 +3,9 @@ use crate::ai::scoring::{ChunkScore, ScoringResult};
 use crate::config::Config;
 use crate::diff::{DiffResult, FileDiff};
 use crate::error::CraiResult;
-use crate::tui::event::{Action, Direction, SubagentAction};
+use crate::tui::event::{Action, Direction, StreamSortMode, SubagentAction};
+use crate::tui::views::stream::calculate_stream_total_lines;
+use std::collections::HashSet;
 
 /// Precomputed index for efficient stream navigation
 #[derive(Debug, Clone)]
@@ -85,6 +87,27 @@ impl StreamIndex {
     }
 }
 
+/// Navigation item for tree traversal
+#[derive(Debug, Clone)]
+pub enum TreeNavItem {
+    File(usize),
+    Highlight(usize, usize), // (file_index, highlight_index)
+}
+
+/// Apply a tree navigation selection
+fn apply_tree_nav(item: &TreeNavItem, tree_selected: &mut usize, selected_highlight: &mut Option<usize>) {
+    match item {
+        TreeNavItem::File(idx) => {
+            *tree_selected = *idx;
+            *selected_highlight = None;
+        }
+        TreeNavItem::Highlight(file_idx, highlight_idx) => {
+            *tree_selected = *file_idx;
+            *selected_highlight = Some(*highlight_idx);
+        }
+    }
+}
+
 pub struct App {
     pub config: Config,
     pub diff_result: DiffResult,
@@ -112,6 +135,12 @@ pub enum View {
         stream_scroll_offset: usize,
         /// Show analysis pane
         show_analysis: bool,
+        /// Sort mode for highlights stream
+        sort_mode: StreamSortMode,
+        /// Files that are expanded to show highlights
+        expanded_files: HashSet<usize>,
+        /// Selected highlight within the selected file (None = file itself is selected)
+        selected_highlight: Option<usize>,
     },
     Stats,
     Help,
@@ -235,12 +264,16 @@ impl App {
                 self.view = View::Summary;
             }
             Action::FileTree => {
+                let expanded = self.compute_smart_expanded();
                 self.view = View::Review {
                     tree_selected: 0,
                     tree_scroll_offset: 0,
                     tree_focused: true,
                     stream_scroll_offset: 0,
                     show_analysis: true,
+                    sort_mode: StreamSortMode::default(),
+                    expanded_files: expanded,
+                    selected_highlight: None,
                 };
             }
             Action::Stats => {
@@ -258,11 +291,11 @@ impl App {
             Action::Tab => {
                 self.handle_tab();
             }
-            Action::NextFile => {
-                self.navigate_file(1);
+            Action::NextHighlight => {
+                self.navigate_highlight(1);
             }
-            Action::PrevFile => {
-                self.navigate_file(-1);
+            Action::PrevHighlight => {
+                self.navigate_highlight(-1);
             }
             Action::Approve | Action::Discuss | Action::RequestChanges | Action::AddNote => {
                 // These would modify review state - stub for now
@@ -288,12 +321,16 @@ impl App {
                         *tree_focused = true;
                     }
                     _ => {
+                        let expanded = self.compute_smart_expanded();
                         self.view = View::Review {
                             tree_selected: 0,
                             tree_scroll_offset: 0,
                             tree_focused: true,
                             stream_scroll_offset: 0,
                             show_analysis: true,
+                            sort_mode: StreamSortMode::default(),
+                            expanded_files: expanded,
+                            selected_highlight: None,
                         };
                     }
                 }
@@ -305,14 +342,26 @@ impl App {
                         *tree_focused = false;
                     }
                     _ => {
+                        let expanded = self.compute_smart_expanded();
                         self.view = View::Review {
                             tree_selected: 0,
                             tree_scroll_offset: 0,
                             tree_focused: false,
                             stream_scroll_offset: 0,
                             show_analysis: true,
+                            sort_mode: StreamSortMode::default(),
+                            expanded_files: expanded,
+                            selected_highlight: None,
                         };
                     }
+                }
+            }
+            Action::ToggleSortMode => {
+                if let View::Review { sort_mode, .. } = &mut self.view {
+                    *sort_mode = match sort_mode {
+                        StreamSortMode::ByScore => StreamSortMode::ByFile,
+                        StreamSortMode::ByFile => StreamSortMode::ByScore,
+                    };
                 }
             }
             Action::ConfirmYes => {
@@ -336,72 +385,136 @@ impl App {
     }
 
     fn handle_navigation(&mut self, dir: Direction) {
+        // Extract state needed for navigation before mutable borrow
+        let (tree_nav_data, is_tree_focused, stream_max_scroll) = if let View::Review {
+            tree_selected,
+            expanded_files,
+            selected_highlight,
+            tree_focused,
+            sort_mode,
+            ..
+        } = &self.view
+        {
+            // Calculate max scroll for stream based on actual highlights
+            let max_scroll = calculate_stream_total_lines(self, *sort_mode).saturating_sub(1);
+
+            if *tree_focused {
+                let tree_items = self.build_tree_item_list(expanded_files);
+                let current_sel = (*tree_selected, *selected_highlight);
+                let has_highlights_for_selected = !self.highlights_for_file(*tree_selected).is_empty();
+                (Some((tree_items, current_sel, has_highlights_for_selected)), true, max_scroll)
+            } else {
+                (None, false, max_scroll)
+            }
+        } else {
+            (None, false, 0)
+        };
+
         match &mut self.view {
             View::Review {
                 tree_selected,
                 tree_scroll_offset,
                 tree_focused,
                 stream_scroll_offset,
+                expanded_files,
+                selected_highlight,
                 ..
             } => {
-                if *tree_focused {
-                    // Navigate file tree
-                    let file_count = self.diff_result.files.len();
-                    match dir {
-                        Direction::Up => {
-                            *tree_selected = tree_selected.saturating_sub(1);
-                            if *tree_selected < *tree_scroll_offset {
-                                *tree_scroll_offset = *tree_selected;
+                if is_tree_focused {
+                    if let Some((tree_items, (curr_file, curr_highlight), has_highlights)) = tree_nav_data {
+                        let total_items = tree_items.len();
+
+                        // Find current position
+                        let current_pos = tree_items
+                            .iter()
+                            .enumerate()
+                            .find(|(_, item)| match item {
+                                TreeNavItem::File(idx) => *idx == curr_file && curr_highlight.is_none(),
+                                TreeNavItem::Highlight(f_idx, h_idx) => {
+                                    *f_idx == curr_file && Some(*h_idx) == curr_highlight
+                                }
+                            })
+                            .map(|(idx, _)| idx)
+                            .unwrap_or(0);
+
+                        match dir {
+                            Direction::Up => {
+                                if current_pos > 0 {
+                                    apply_tree_nav(&tree_items[current_pos - 1], tree_selected, selected_highlight);
+                                }
                             }
-                        }
-                        Direction::Down => {
-                            *tree_selected = (*tree_selected + 1).min(file_count.saturating_sub(1));
-                        }
-                        Direction::Home => {
-                            *tree_selected = 0;
-                            *tree_scroll_offset = 0;
-                        }
-                        Direction::End => {
-                            *tree_selected = file_count.saturating_sub(1);
-                        }
-                        Direction::PageUp => {
-                            *tree_selected = tree_selected.saturating_sub(10);
-                            if *tree_selected < *tree_scroll_offset {
-                                *tree_scroll_offset = *tree_selected;
+                            Direction::Down => {
+                                if current_pos + 1 < total_items {
+                                    apply_tree_nav(&tree_items[current_pos + 1], tree_selected, selected_highlight);
+                                }
                             }
-                        }
-                        Direction::PageDown => {
-                            *tree_selected = (*tree_selected + 10).min(file_count.saturating_sub(1));
-                        }
-                        Direction::Left => {
-                            // Stay in tree, do nothing
-                        }
-                        Direction::Right => {
-                            // Move focus to stream
-                            *tree_focused = false;
+                            Direction::Home => {
+                                if !tree_items.is_empty() {
+                                    apply_tree_nav(&tree_items[0], tree_selected, selected_highlight);
+                                    *tree_scroll_offset = 0;
+                                }
+                            }
+                            Direction::End => {
+                                if !tree_items.is_empty() {
+                                    apply_tree_nav(&tree_items[total_items - 1], tree_selected, selected_highlight);
+                                }
+                            }
+                            Direction::PageUp => {
+                                let new_pos = current_pos.saturating_sub(10);
+                                if !tree_items.is_empty() {
+                                    apply_tree_nav(&tree_items[new_pos], tree_selected, selected_highlight);
+                                }
+                            }
+                            Direction::PageDown => {
+                                let new_pos = (current_pos + 10).min(total_items.saturating_sub(1));
+                                if !tree_items.is_empty() {
+                                    apply_tree_nav(&tree_items[new_pos], tree_selected, selected_highlight);
+                                }
+                            }
+                            Direction::Left => {
+                                if selected_highlight.is_some() {
+                                    *selected_highlight = None;
+                                } else if expanded_files.contains(tree_selected) {
+                                    expanded_files.remove(tree_selected);
+                                }
+                            }
+                            Direction::Right => {
+                                if selected_highlight.is_none() {
+                                    if has_highlights {
+                                        if !expanded_files.contains(tree_selected) {
+                                            expanded_files.insert(*tree_selected);
+                                        } else {
+                                            *selected_highlight = Some(0);
+                                        }
+                                    } else {
+                                        *tree_focused = false;
+                                    }
+                                } else {
+                                    *tree_focused = false;
+                                }
+                            }
                         }
                     }
                 } else {
-                    // Navigate stream
-                    let max_scroll = self.stream_index.total_lines.saturating_sub(1);
+                    // Navigate stream using pre-calculated max scroll
                     match dir {
                         Direction::Up => {
                             *stream_scroll_offset = stream_scroll_offset.saturating_sub(1);
                         }
                         Direction::Down => {
-                            *stream_scroll_offset = (*stream_scroll_offset + 1).min(max_scroll);
+                            *stream_scroll_offset = (*stream_scroll_offset + 1).min(stream_max_scroll);
                         }
                         Direction::PageUp => {
                             *stream_scroll_offset = stream_scroll_offset.saturating_sub(20);
                         }
                         Direction::PageDown => {
-                            *stream_scroll_offset = (*stream_scroll_offset + 20).min(max_scroll);
+                            *stream_scroll_offset = (*stream_scroll_offset + 20).min(stream_max_scroll);
                         }
                         Direction::Home => {
                             *stream_scroll_offset = 0;
                         }
                         Direction::End => {
-                            *stream_scroll_offset = max_scroll;
+                            *stream_scroll_offset = stream_max_scroll;
                         }
                         Direction::Left => {
                             // Move focus to tree
@@ -421,24 +534,38 @@ impl App {
         match &mut self.view {
             View::Summary => {
                 // Enter review mode
+                let expanded = self.compute_smart_expanded();
                 self.view = View::Review {
                     tree_selected: 0,
                     tree_scroll_offset: 0,
                     tree_focused: false, // Start with stream focused
                     stream_scroll_offset: 0,
                     show_analysis: true,
+                    sort_mode: StreamSortMode::default(),
+                    expanded_files: expanded,
+                    selected_highlight: None,
                 };
             }
             View::Review {
                 tree_selected,
                 tree_focused,
-                stream_scroll_offset,
+                expanded_files,
+                selected_highlight,
                 ..
             } => {
                 if *tree_focused {
-                    // Jump stream to selected file
-                    *stream_scroll_offset = self.stream_index.file_to_position(*tree_selected);
-                    *tree_focused = false; // Move focus to stream
+                    if selected_highlight.is_some() {
+                        // A highlight is selected - jump to it in stream and focus stream
+                        // TODO: Jump to specific highlight
+                        *tree_focused = false;
+                    } else {
+                        // A file is selected - toggle expand/collapse
+                        if expanded_files.contains(tree_selected) {
+                            expanded_files.remove(tree_selected);
+                        } else {
+                            expanded_files.insert(*tree_selected);
+                        }
+                    }
                 }
             }
             View::Help => {
@@ -458,25 +585,103 @@ impl App {
         }
     }
 
-    fn navigate_file(&mut self, delta: i32) {
+    fn navigate_highlight(&mut self, delta: i32) {
+        // Get highlight positions first (before mutable borrow)
+        let highlight_starts = self.get_highlight_starts();
+        if highlight_starts.is_empty() {
+            return;
+        }
+
         if let View::Review {
-            tree_selected,
             stream_scroll_offset,
+            tree_focused,
             ..
         } = &mut self.view
         {
-            let file_count = self.diff_result.files.len();
-            let new_index = if delta > 0 {
-                (*tree_selected + delta as usize).min(file_count.saturating_sub(1))
+            // Find current highlight index based on scroll position
+            let current_idx = highlight_starts
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(_, &start)| *stream_scroll_offset >= start)
+                .map(|(idx, _)| idx)
+                .unwrap_or(0);
+
+            // Calculate new index
+            let new_idx = if delta > 0 {
+                (current_idx + delta as usize).min(highlight_starts.len().saturating_sub(1))
             } else {
-                tree_selected.saturating_sub((-delta) as usize)
+                current_idx.saturating_sub((-delta) as usize)
             };
 
-            if new_index != *tree_selected {
-                *tree_selected = new_index;
-                *stream_scroll_offset = self.stream_index.file_to_position(new_index);
+            // Jump to new highlight
+            if let Some(&new_offset) = highlight_starts.get(new_idx) {
+                *stream_scroll_offset = new_offset;
+                *tree_focused = false; // Ensure stream is focused
             }
         }
+    }
+
+    /// Get the starting line positions for each highlight in the stream
+    fn get_highlight_starts(&self) -> Vec<usize> {
+        let Some(scoring_result) = &self.scoring_result else {
+            return Vec::new();
+        };
+
+        let highlights: Vec<_> = scoring_result
+            .scores
+            .iter()
+            .filter(|s| !s.is_filtered() && s.response.is_some())
+            .collect();
+
+        let mut starts = Vec::with_capacity(highlights.len());
+        let mut current_line = 0;
+
+        for score in highlights {
+            starts.push(current_line);
+            current_line += self.calculate_highlight_height(score);
+        }
+
+        starts
+    }
+
+    /// Calculate how many lines a highlight block needs (mirrors stream.rs logic)
+    fn calculate_highlight_height(&self, score: &ChunkScore) -> usize {
+        let file = match self.diff_result.files.get(score.file_index) {
+            Some(f) => f,
+            None => return 0,
+        };
+        let chunk = match file.chunks.get(score.chunk_index) {
+            Some(c) => c,
+            None => return 0,
+        };
+
+        let mut height = 0;
+
+        // Header: 3 lines (title + separator + blank)
+        height += 3;
+
+        // Side-by-side diff: chunk lines + 2 for borders
+        height += chunk.lines.len() + 2;
+
+        // Analysis section
+        if let Some(resp) = &score.response {
+            height += 1; // "Analysis" header
+            height += 1; // Classification/Score line
+            height += 1; // Blank
+            height += 1; // Reasoning
+
+            if !resp.concerns.is_empty() {
+                height += 1; // Blank
+                height += 1; // "Concerns:" header
+                height += resp.concerns.len();
+            }
+        }
+
+        // Separator: 2 lines
+        height += 2;
+
+        height
     }
 
     // Accessor methods for views
@@ -540,4 +745,55 @@ impl App {
             .map(|sr| sr.stats.total_lines)
             .unwrap_or(0)
     }
+
+    /// Compute which files should be auto-expanded (smart expand)
+    /// Files are expanded if they have at least one highlight with score >= 0.5
+    pub fn compute_smart_expanded(&self) -> HashSet<usize> {
+        let mut expanded = HashSet::new();
+
+        if let Some(sr) = &self.scoring_result {
+            for score in &sr.scores {
+                if let Some(resp) = &score.response {
+                    if resp.score >= 0.5 {
+                        expanded.insert(score.file_index);
+                    }
+                }
+            }
+        }
+
+        expanded
+    }
+
+    /// Get highlights for a specific file (non-heuristic-filtered chunks with responses)
+    pub fn highlights_for_file(&self, file_index: usize) -> Vec<&ChunkScore> {
+        self.scoring_result
+            .as_ref()
+            .map(|sr| {
+                sr.scores
+                    .iter()
+                    .filter(|s| {
+                        s.file_index == file_index
+                            && s.response.is_some()
+                            && !s.is_heuristic_filtered()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Build flat list of tree items for navigation
+    fn build_tree_item_list(&self, expanded_files: &HashSet<usize>) -> Vec<TreeNavItem> {
+        let mut items = Vec::new();
+        for (file_idx, _) in self.diff_result.files.iter().enumerate() {
+            items.push(TreeNavItem::File(file_idx));
+            if expanded_files.contains(&file_idx) {
+                let highlights = self.highlights_for_file(file_idx);
+                for (h_idx, _) in highlights.iter().enumerate() {
+                    items.push(TreeNavItem::Highlight(file_idx, h_idx));
+                }
+            }
+        }
+        items
+    }
+
 }
