@@ -1,7 +1,8 @@
 # crai
 
 <img width="1903" height="1042" alt="image" src="https://github.com/user-attachments/assets/51f31136-998c-45cc-9861-5d196cc188e2" />
-<img width="1913" height="1046" alt="image" src="https://github.com/user-attachments/assets/8b17ef4e-c516-4dbf-b7de-2daa64771c5a" />
+<img width="1903" height="980" alt="image" src="https://github.com/user-attachments/assets/81dd1805-efed-486d-b50d-d89d9e846fea" />
+
 
 
 Code review is crai-zee hard. Most diffs are full of noise—imports, formatting, lock files, trivial refactors. The interesting parts (logic changes, security implications, subtle bugs) get buried.
