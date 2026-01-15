@@ -128,7 +128,7 @@ impl AiProviderFactory {
                 Ok(Arc::new(crate::ai::claude::ClaudeProvider::new(config)?))
             }
             AiProviderType::Kiro => {
-                Err(CraiError::AiProvider("Kiro provider not yet implemented".to_string()))
+                Ok(Arc::new(crate::ai::kiro::KiroProvider::new(config)?))
             }
             AiProviderType::OpenAi => {
                 Err(CraiError::AiProvider("OpenAI provider not yet implemented".to_string()))
