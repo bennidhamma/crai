@@ -4,7 +4,7 @@ use crate::config::Config;
 use crate::diff::{DiffResult, FileDiff};
 use crate::error::CraiResult;
 use crate::tui::event::{Action, Direction, StreamSortMode, SubagentAction};
-use crate::tui::views::stream::calculate_stream_total_lines;
+use crate::tui::views::stream::{calculate_stream_total_lines, get_sorted_highlights};
 use std::collections::HashSet;
 
 /// Precomputed index for efficient stream navigation
@@ -106,6 +106,13 @@ fn apply_tree_nav(item: &TreeNavItem, tree_selected: &mut usize, selected_highli
             *selected_highlight = Some(*highlight_idx);
         }
     }
+}
+
+/// Navigation context for different modes
+enum NavContext {
+    FlatList { current: usize, total: usize },
+    FileTree { tree_items: Vec<TreeNavItem>, current_sel: (usize, Option<usize>), has_highlights: bool },
+    Stream { max_scroll: usize },
 }
 
 pub struct App {
@@ -386,7 +393,7 @@ impl App {
 
     fn handle_navigation(&mut self, dir: Direction) {
         // Extract state needed for navigation before mutable borrow
-        let (tree_nav_data, is_tree_focused, stream_max_scroll) = if let View::Review {
+        let nav_context = if let View::Review {
             tree_selected,
             expanded_files,
             selected_highlight,
@@ -399,16 +406,34 @@ impl App {
             let max_scroll = calculate_stream_total_lines(self, *sort_mode).saturating_sub(1);
 
             if *tree_focused {
-                let tree_items = self.build_tree_item_list(expanded_files);
-                let current_sel = (*tree_selected, *selected_highlight);
-                let has_highlights_for_selected = !self.highlights_for_file(*tree_selected).is_empty();
-                (Some((tree_items, current_sel, has_highlights_for_selected)), true, max_scroll)
+                match *sort_mode {
+                    StreamSortMode::ByScore => {
+                        // Flat list mode - get total highlight count
+                        let (highlights, _) = get_sorted_highlights(self, StreamSortMode::ByScore);
+                        let total = highlights.len();
+                        let current = selected_highlight.unwrap_or(0);
+                        Some(NavContext::FlatList { current, total })
+                    }
+                    StreamSortMode::ByFile => {
+                        // Tree mode
+                        let tree_items = self.build_tree_item_list(expanded_files);
+                        let current_sel = (*tree_selected, *selected_highlight);
+                        let has_highlights = !self.highlights_for_file(*tree_selected).is_empty();
+                        Some(NavContext::FileTree {
+                            tree_items,
+                            current_sel,
+                            has_highlights,
+                        })
+                    }
+                }
             } else {
-                (None, false, max_scroll)
+                Some(NavContext::Stream { max_scroll })
             }
         } else {
-            (None, false, 0)
+            None
         };
+
+        let Some(ctx) = nav_context else { return };
 
         match &mut self.view {
             View::Review {
@@ -420,8 +445,44 @@ impl App {
                 selected_highlight,
                 ..
             } => {
-                if is_tree_focused {
-                    if let Some((tree_items, (curr_file, curr_highlight), has_highlights)) = tree_nav_data {
+                match ctx {
+                    NavContext::FlatList { current, total } => {
+                        // ByScore mode - flat list navigation
+                        match dir {
+                            Direction::Up => {
+                                if current > 0 {
+                                    *selected_highlight = Some(current - 1);
+                                }
+                            }
+                            Direction::Down => {
+                                if current + 1 < total {
+                                    *selected_highlight = Some(current + 1);
+                                }
+                            }
+                            Direction::Home => {
+                                *selected_highlight = Some(0);
+                                *tree_scroll_offset = 0;
+                            }
+                            Direction::End => {
+                                *selected_highlight = Some(total.saturating_sub(1));
+                            }
+                            Direction::PageUp => {
+                                *selected_highlight = Some(current.saturating_sub(10));
+                            }
+                            Direction::PageDown => {
+                                *selected_highlight = Some((current + 10).min(total.saturating_sub(1)));
+                            }
+                            Direction::Left | Direction::Right => {
+                                // Right moves to stream, Left does nothing in flat mode
+                                if matches!(dir, Direction::Right) {
+                                    *tree_focused = false;
+                                }
+                            }
+                        }
+                    }
+                    NavContext::FileTree { tree_items, current_sel, has_highlights } => {
+                        // ByFile mode - hierarchical tree navigation
+                        let (curr_file, curr_highlight) = current_sel;
                         let total_items = tree_items.len();
 
                         // Find current position
@@ -495,33 +556,34 @@ impl App {
                             }
                         }
                     }
-                } else {
-                    // Navigate stream using pre-calculated max scroll
-                    match dir {
-                        Direction::Up => {
-                            *stream_scroll_offset = stream_scroll_offset.saturating_sub(1);
-                        }
-                        Direction::Down => {
-                            *stream_scroll_offset = (*stream_scroll_offset + 1).min(stream_max_scroll);
-                        }
-                        Direction::PageUp => {
-                            *stream_scroll_offset = stream_scroll_offset.saturating_sub(20);
-                        }
-                        Direction::PageDown => {
-                            *stream_scroll_offset = (*stream_scroll_offset + 20).min(stream_max_scroll);
-                        }
-                        Direction::Home => {
-                            *stream_scroll_offset = 0;
-                        }
-                        Direction::End => {
-                            *stream_scroll_offset = stream_max_scroll;
-                        }
-                        Direction::Left => {
-                            // Move focus to tree
-                            *tree_focused = true;
-                        }
-                        Direction::Right => {
-                            // Stay in stream, do nothing
+                    NavContext::Stream { max_scroll } => {
+                        // Navigate stream using pre-calculated max scroll
+                        match dir {
+                            Direction::Up => {
+                                *stream_scroll_offset = stream_scroll_offset.saturating_sub(1);
+                            }
+                            Direction::Down => {
+                                *stream_scroll_offset = (*stream_scroll_offset + 1).min(max_scroll);
+                            }
+                            Direction::PageUp => {
+                                *stream_scroll_offset = stream_scroll_offset.saturating_sub(20);
+                            }
+                            Direction::PageDown => {
+                                *stream_scroll_offset = (*stream_scroll_offset + 20).min(max_scroll);
+                            }
+                            Direction::Home => {
+                                *stream_scroll_offset = 0;
+                            }
+                            Direction::End => {
+                                *stream_scroll_offset = max_scroll;
+                            }
+                            Direction::Left => {
+                                // Move focus to tree
+                                *tree_focused = true;
+                            }
+                            Direction::Right => {
+                                // Stay in stream, do nothing
+                            }
                         }
                     }
                 }
@@ -531,6 +593,35 @@ impl App {
     }
 
     fn handle_select(&mut self) {
+        // Pre-calculate scroll offset if needed (before mutable borrow)
+        let jump_offset = if let View::Review {
+            tree_selected,
+            tree_focused,
+            sort_mode,
+            selected_highlight,
+            ..
+        } = &self.view
+        {
+            if *tree_focused {
+                match *sort_mode {
+                    StreamSortMode::ByScore => {
+                        selected_highlight.and_then(|idx| {
+                            self.get_scroll_offset_for_highlight(idx, *sort_mode)
+                        })
+                    }
+                    StreamSortMode::ByFile => {
+                        selected_highlight.and_then(|idx| {
+                            self.get_scroll_offset_for_file_highlight(*tree_selected, idx)
+                        })
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         match &mut self.view {
             View::Summary => {
                 // Enter review mode
@@ -549,21 +640,36 @@ impl App {
             View::Review {
                 tree_selected,
                 tree_focused,
+                stream_scroll_offset,
+                sort_mode,
                 expanded_files,
                 selected_highlight,
                 ..
             } => {
                 if *tree_focused {
-                    if selected_highlight.is_some() {
-                        // A highlight is selected - jump to it in stream and focus stream
-                        // TODO: Jump to specific highlight
-                        *tree_focused = false;
-                    } else {
-                        // A file is selected - toggle expand/collapse
-                        if expanded_files.contains(tree_selected) {
-                            expanded_files.remove(tree_selected);
-                        } else {
-                            expanded_files.insert(*tree_selected);
+                    match *sort_mode {
+                        StreamSortMode::ByScore => {
+                            if selected_highlight.is_some() {
+                                if let Some(offset) = jump_offset {
+                                    *stream_scroll_offset = offset;
+                                }
+                                *tree_focused = false;
+                            }
+                        }
+                        StreamSortMode::ByFile => {
+                            if selected_highlight.is_some() {
+                                if let Some(offset) = jump_offset {
+                                    *stream_scroll_offset = offset;
+                                }
+                                *tree_focused = false;
+                            } else {
+                                // A file is selected - toggle expand/collapse
+                                if expanded_files.contains(tree_selected) {
+                                    expanded_files.remove(tree_selected);
+                                } else {
+                                    expanded_files.insert(*tree_selected);
+                                }
+                            }
                         }
                     }
                 }
@@ -661,27 +767,92 @@ impl App {
         // Header: 3 lines (title + separator + blank)
         height += 3;
 
-        // Side-by-side diff: chunk lines + 2 for borders
-        height += chunk.lines.len() + 2;
-
-        // Analysis section
+        // Analysis section (shown first)
         if let Some(resp) = &score.response {
             height += 1; // "Analysis" header
             height += 1; // Classification/Score line
             height += 1; // Blank
-            height += 1; // Reasoning
+            height += 1; // Reasoning (simplified - doesn't account for wrapping)
 
             if !resp.concerns.is_empty() {
                 height += 1; // Blank
                 height += 1; // "Concerns:" header
                 height += resp.concerns.len();
             }
+
+            height += 1; // Blank after analysis
         }
+
+        // "Changes:" header + diff lines
+        height += 1; // "Changes:" header
+        height += chunk.lines.len();
 
         // Separator: 2 lines
         height += 2;
 
         height
+    }
+
+    /// Get scroll offset for a highlight at the given index in the sorted highlights list
+    fn get_scroll_offset_for_highlight(&self, target_idx: usize, sort_mode: StreamSortMode) -> Option<usize> {
+        let (highlights, divider_index) = get_sorted_highlights(self, sort_mode);
+
+        if target_idx >= highlights.len() {
+            return None;
+        }
+
+        // Use estimated width for height calculation (same as calculate_stream_total_lines)
+        let estimated_width = 100;
+        let divider_height = 5; // Same as DIVIDER_HEIGHT in stream.rs
+
+        let mut offset = 0;
+        for (idx, score) in highlights.iter().enumerate() {
+            // Add divider height if we're at the divider position (ByScore mode only)
+            if sort_mode == StreamSortMode::ByScore && divider_index == Some(idx) {
+                offset += divider_height;
+            }
+
+            if idx == target_idx {
+                return Some(offset);
+            }
+
+            offset += self.calculate_highlight_height_with_width(score, estimated_width);
+        }
+
+        None
+    }
+
+    /// Get scroll offset for a highlight by file index and per-file highlight index (for ByFile mode)
+    fn get_scroll_offset_for_file_highlight(&self, file_idx: usize, highlight_idx: usize) -> Option<usize> {
+        let (highlights, _) = get_sorted_highlights(self, StreamSortMode::ByFile);
+
+        // Find the highlight in the sorted list that matches file_idx and highlight_idx
+        let file_highlights = self.highlights_for_file(file_idx);
+        let target_score = file_highlights.get(highlight_idx)?;
+
+        // Find this score's position in the sorted list
+        let target_pos = highlights.iter().position(|s| {
+            s.file_index == target_score.file_index && s.chunk_index == target_score.chunk_index
+        })?;
+
+        // Calculate offset
+        let estimated_width = 100;
+        let mut offset = 0;
+        for (idx, score) in highlights.iter().enumerate() {
+            if idx == target_pos {
+                return Some(offset);
+            }
+            offset += self.calculate_highlight_height_with_width(score, estimated_width);
+        }
+
+        None
+    }
+
+    /// Calculate highlight height with a specific width (for scroll offset calculations)
+    fn calculate_highlight_height_with_width(&self, score: &ChunkScore, _content_width: usize) -> usize {
+        // For now, use the simpler calculation without text wrapping
+        // This is an approximation but works well enough for navigation
+        self.calculate_highlight_height(score)
     }
 
     // Accessor methods for views

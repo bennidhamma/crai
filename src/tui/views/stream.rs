@@ -68,7 +68,7 @@ fn render_empty_state(frame: &mut Frame, area: Rect, app: &App) {
 
 /// Get highlights sorted according to mode, returning (highlights, divider_index)
 /// divider_index is the index of the first item below threshold (only relevant for ByScore mode)
-fn get_sorted_highlights(app: &App, sort_mode: StreamSortMode) -> (Vec<&ChunkScore>, Option<usize>) {
+pub fn get_sorted_highlights(app: &App, sort_mode: StreamSortMode) -> (Vec<&ChunkScore>, Option<usize>) {
     let Some(scoring_result) = &app.scoring_result else {
         return (Vec::new(), None);
     };
@@ -250,10 +250,7 @@ fn calculate_highlight_height(app: &App, score: &ChunkScore, content_width: usiz
     // Header: 3 lines (title + separator + blank)
     height += 3;
 
-    // Side-by-side diff: chunk lines + 2 for borders
-    height += chunk.lines.len() + 2;
-
-    // Analysis section
+    // Analysis section (shown first)
     if let Some(resp) = &score.response {
         height += 1; // "Analysis" header
         height += 1; // Classification/Score line
@@ -280,7 +277,13 @@ fn calculate_highlight_height(app: &App, score: &ChunkScore, content_width: usiz
                 }
             }
         }
+
+        height += 1; // Blank after analysis
     }
+
+    // "Changes:" header + diff lines
+    height += 1; // "Changes:" header
+    height += chunk.lines.len();
 
     // Separator: 2 lines
     height += 2;
@@ -367,12 +370,7 @@ fn render_highlight_block<'a>(
 
     lines.push(Line::from(""));
 
-    // === SIDE-BY-SIDE DIFF ===
-    lines.extend(render_side_by_side_diff(chunk, app.config.tui.show_line_numbers, content_width));
-
-    lines.push(Line::from(""));
-
-    // === ANALYSIS ===
+    // === ANALYSIS (shown first) ===
     lines.push(Line::from(Span::styled(
         "Analysis:",
         Style::default()
@@ -434,6 +432,17 @@ fn render_highlight_block<'a>(
             }
         }
     }
+
+    lines.push(Line::from(""));
+
+    // === SIDE-BY-SIDE DIFF (shown after analysis) ===
+    lines.push(Line::from(Span::styled(
+        "Changes:",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.extend(render_side_by_side_diff(chunk, app.config.tui.show_line_numbers, content_width));
 
     // === SEPARATOR ===
     lines.push(Line::from(""));

@@ -104,6 +104,7 @@ impl LayoutManager {
             tree_focused,
             expanded_files,
             selected_highlight,
+            sort_mode,
         );
 
         // Render highlights stream (includes inline analysis)

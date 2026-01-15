@@ -1,5 +1,8 @@
+use crate::ai::scoring::ChunkScore;
 use crate::diff::chunk::FileStatus;
 use crate::tui::app::App;
+use crate::tui::event::StreamSortMode;
+use crate::tui::views::stream::get_sorted_highlights;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
 use std::collections::HashSet;
@@ -13,6 +16,155 @@ enum TreeItem {
 
 /// Render compact file tree sidebar for Review view with expandable highlights
 pub fn render_sidebar(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    selected_file: usize,
+    scroll_offset: usize,
+    is_focused: bool,
+    expanded_files: &HashSet<usize>,
+    selected_highlight: Option<usize>,
+    sort_mode: StreamSortMode,
+) {
+    match sort_mode {
+        StreamSortMode::ByScore => {
+            render_flat_highlights(frame, area, app, selected_highlight.unwrap_or(0), scroll_offset, is_focused);
+        }
+        StreamSortMode::ByFile => {
+            render_file_tree(frame, area, app, selected_file, scroll_offset, is_focused, expanded_files, selected_highlight);
+        }
+    }
+}
+
+/// Render flat list of highlights sorted by score (for ByScore mode)
+fn render_flat_highlights(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    selected_index: usize,
+    scroll_offset: usize,
+    is_focused: bool,
+) {
+    let border_color = if is_focused {
+        Color::Cyan
+    } else {
+        Color::DarkGray
+    };
+
+    let visible_height = area.height.saturating_sub(2) as usize;
+    let sidebar_width = area.width.saturating_sub(4) as usize;
+
+    // Get highlights sorted by score
+    let (highlights, divider_index) = get_sorted_highlights(app, StreamSortMode::ByScore);
+    let threshold = app.config.filters.controversiality_threshold;
+
+    // Render visible items
+    let items: Vec<ListItem> = highlights
+        .iter()
+        .enumerate()
+        .skip(scroll_offset)
+        .take(visible_height)
+        .map(|(idx, score)| {
+            render_highlight_item(app, score, idx, selected_index, sidebar_width, divider_index, threshold)
+        })
+        .collect();
+
+    let total_items = highlights.len();
+    let title = format!(" (2) Highlights ({}) ", total_items);
+
+    let list = List::new(items).block(
+        Block::default()
+            .title(title)
+            .title_bottom(Line::from(format!(" {}/{} ", selected_index + 1, total_items)).right_aligned())
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border_color)),
+    );
+
+    let mut state = ListState::default();
+    if selected_index >= scroll_offset {
+        state.select(Some(selected_index - scroll_offset));
+    }
+
+    frame.render_stateful_widget(list, area, &mut state);
+}
+
+/// Render a single highlight item for the sidebar
+fn render_highlight_item<'a>(
+    app: &'a App,
+    score: &'a ChunkScore,
+    idx: usize,
+    selected_index: usize,
+    sidebar_width: usize,
+    divider_index: Option<usize>,
+    _threshold: f64,
+) -> ListItem<'a> {
+    let file = &app.diff_result.files[score.file_index];
+    let resp = score.response.as_ref();
+
+    let score_val = resp.map(|r| r.score).unwrap_or(0.0);
+    let reasoning = resp
+        .map(|r| r.reasoning.replace('\n', " "))
+        .unwrap_or_default();
+
+    // Get filename for context
+    let filename = file
+        .path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("?");
+
+    let score_style = if score_val >= 0.7 {
+        Style::default().fg(Color::Red)
+    } else if score_val >= 0.5 {
+        Style::default().fg(Color::Yellow)
+    } else if divider_index.map(|d| idx >= d).unwrap_or(false) {
+        // Below threshold - dim
+        Style::default().fg(Color::DarkGray)
+    } else {
+        Style::default().fg(Color::Green)
+    };
+
+    // Format: [XX%] filename: reasoning preview...
+    let prefix = format!("[{:>2.0}%] ", score_val * 100.0);
+    let prefix_len = prefix.chars().count();
+
+    // Calculate space for filename and reasoning
+    let remaining_width = sidebar_width.saturating_sub(prefix_len);
+    let filename_max = 12.min(remaining_width / 3);
+    let truncated_filename = truncate_str(filename, filename_max);
+    let filename_actual_len = truncated_filename.chars().count();
+
+    // Space for reasoning: remaining - filename - ": "
+    let reasoning_width = remaining_width.saturating_sub(filename_actual_len + 2);
+    let truncated_reasoning = truncate_str(&reasoning, reasoning_width);
+
+    let text_style = if divider_index.map(|d| idx >= d).unwrap_or(false) {
+        Style::default().fg(Color::DarkGray)
+    } else {
+        Style::default()
+    };
+
+    let line = Line::from(vec![
+        Span::styled(prefix, score_style),
+        Span::styled(truncated_filename, Style::default().fg(Color::Blue)),
+        Span::styled(": ", Style::default().fg(Color::DarkGray)),
+        Span::styled(truncated_reasoning, text_style),
+    ]);
+
+    let is_selected = idx == selected_index;
+    let item_style = if is_selected {
+        Style::default()
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+
+    ListItem::new(line).style(item_style)
+}
+
+/// Render hierarchical file tree with expandable highlights (for ByFile mode)
+fn render_file_tree(
     frame: &mut Frame,
     area: Rect,
     app: &App,
@@ -111,11 +263,7 @@ pub fn render_sidebar(
                     };
 
                     let max_name_chars = sidebar_width.saturating_sub(6 + highlight_count.len());
-                    let truncated = if filename.chars().count() > max_name_chars && max_name_chars > 3 {
-                        format!("{}...", filename.chars().take(max_name_chars - 3).collect::<String>())
-                    } else {
-                        filename.to_string()
-                    };
+                    let truncated = truncate_str(filename, max_name_chars);
 
                     let line = Line::from(vec![
                         Span::raw(format!("{} ", expand_char)),
@@ -137,14 +285,16 @@ pub fn render_sidebar(
                 }
                 TreeItem::Highlight { file_index, highlight_index } => {
                     let highlights = app.highlights_for_file(*file_index);
-                    let score = highlights.get(*highlight_index)
+                    let chunk_score = highlights.get(*highlight_index);
+                    let score = chunk_score
                         .and_then(|s| s.response.as_ref())
                         .map(|r| r.score)
                         .unwrap_or(0.0);
 
-                    let classification = highlights.get(*highlight_index)
+                    // Get truncated reasoning instead of classification
+                    let reasoning = chunk_score
                         .and_then(|s| s.response.as_ref())
-                        .map(|r| format!("{}", r.classification))
+                        .map(|r| r.reasoning.replace('\n', " "))
                         .unwrap_or_default();
 
                     let score_style = if score >= 0.7 {
@@ -155,17 +305,13 @@ pub fn render_sidebar(
                         Style::default().fg(Color::Green)
                     };
 
-                    let max_class_chars = sidebar_width.saturating_sub(12);
-                    let truncated_class = if classification.chars().count() > max_class_chars && max_class_chars > 3 {
-                        format!("{}...", classification.chars().take(max_class_chars - 3).collect::<String>())
-                    } else {
-                        classification
-                    };
+                    let max_reason_chars = sidebar_width.saturating_sub(12);
+                    let truncated_reason = truncate_str(&reasoning, max_reason_chars);
 
                     let line = Line::from(vec![
                         Span::raw("    "),
                         Span::styled(format!("[{:>2.0}%] ", score * 100.0), score_style),
-                        Span::raw(truncated_class),
+                        Span::raw(truncated_reason),
                     ]);
 
                     let is_selected = visual_idx == selected_visual_index;
@@ -198,6 +344,17 @@ pub fn render_sidebar(
     }
 
     frame.render_stateful_widget(list, area, &mut state);
+}
+
+fn truncate_str(s: &str, max_chars: usize) -> String {
+    let char_count = s.chars().count();
+    if char_count <= max_chars {
+        s.to_string()
+    } else if max_chars > 3 {
+        format!("{}...", s.chars().take(max_chars - 3).collect::<String>())
+    } else {
+        s.chars().take(max_chars).collect()
+    }
 }
 
 /// Render full file tree view (original behavior)
