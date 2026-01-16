@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use crai::ai::provider::{AiProviderFactory, ScoringContext, SummaryContext};
 use crai::ai::scoring::{ScoringOrchestrator, ScoringUpdate};
-use crai::config::{self, Config};
+use crai::config::{self, AiProviderType, Config};
 use crai::diff::filter::ChunkFilter;
 use crai::diff::git::GitOperations;
 use crai::diff::parser::DiffParser;
@@ -9,7 +9,10 @@ use crai::error::CraiResult;
 use crai::tui::event::{Action, Event, EventHandler};
 use crai::tui::layout::LayoutManager;
 use crai::tui::{self, App};
+use std::io::{self, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(name = "crai")]
@@ -19,9 +22,9 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    /// Path to config file
-    #[arg(short, long, default_value = "crai.toml")]
-    config: PathBuf,
+    /// Path to config file (defaults to ~/.config/crai/crai.toml)
+    #[arg(short, long)]
+    config: Option<PathBuf>,
 
     /// Base branch to compare against
     #[arg(short, long)]
@@ -56,9 +59,9 @@ struct Cli {
 enum Commands {
     /// Initialize a new config file
     Init {
-        /// Output path for config
-        #[arg(short, long, default_value = "crai.toml")]
-        output: PathBuf,
+        /// Output path for config (defaults to ~/.config/crai/crai.toml)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
     },
 
     /// Check configuration and dependencies
@@ -80,23 +83,86 @@ async fn main() -> CraiResult<()> {
 
     let cli = Cli::parse();
 
-    // Load config (use defaults if not found)
-    let config = if cli.config.exists() {
-        config::load_config(&cli.config)?
-    } else {
-        Config::default()
+    // Handle Init command before loading config
+    if let Some(Commands::Init { output }) = &cli.command {
+        let output_path = output
+            .clone()
+            .or_else(config::default_config_path)
+            .ok_or_else(|| crai::error::CraiError::Config(
+                "Could not determine config directory".to_string()
+            ))?;
+
+        // Run interactive setup
+        let provider = prompt_for_provider()?;
+        config::create_config_with_provider(&output_path, provider)?;
+        println!("Created config at {}", output_path.display());
+        return Ok(());
+    }
+
+    // Determine config path: CLI arg > user config dir > default
+    let config_path = cli.config.clone()
+        .or_else(config::default_config_path);
+
+    // Load config or run first-time setup
+    let config = match &config_path {
+        Some(path) if path.exists() => config::load_config(path)?,
+        Some(path) => {
+            // Config path specified but doesn't exist - run setup
+            println!("Welcome to CRAI - AI-powered Code Review\n");
+            println!("No configuration found. Let's set up your config.\n");
+
+            let provider = prompt_for_provider()?;
+            config::create_config_with_provider(path, provider)?;
+            println!("\nConfig created at {}\n", path.display());
+
+            config::load_config(path)?
+        }
+        None => {
+            // No config path available - use defaults
+            eprintln!("Warning: Could not determine config directory, using defaults");
+            Config::default()
+        }
     };
 
     match cli.command {
-        Some(Commands::Init { output }) => {
-            config::create_default_config(&output)?;
-            println!("Created config at {}", output.display());
-            Ok(())
-        }
+        Some(Commands::Init { .. }) => unreachable!(), // Already handled above
         Some(Commands::Doctor) => run_doctor(&config).await,
         Some(Commands::Summary) => run_summary(&cli, &config).await,
         None => run_interactive(&cli, &config).await,
     }
+}
+
+/// Prompt user to select an AI provider
+fn prompt_for_provider() -> CraiResult<AiProviderType> {
+    println!("Which AI CLI would you like to use?\n");
+    println!("  1. kiro-cli  - Kiro CLI (default)");
+    println!("  2. claude    - Anthropic's Claude CLI\n");
+
+    print!("Enter choice [1]: ");
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let input = input.trim();
+
+    let provider = match input {
+        "" | "1" | "kiro" | "kiro-cli" => {
+            println!("\nSelected: Kiro CLI");
+            println!("Make sure 'kiro-cli' is installed and in your PATH.");
+            AiProviderType::Kiro
+        }
+        "2" | "claude" => {
+            println!("\nSelected: Claude CLI");
+            println!("Make sure 'claude' is installed and in your PATH.");
+            AiProviderType::Claude
+        }
+        _ => {
+            println!("\nUnknown option '{}', defaulting to Kiro CLI", input);
+            AiProviderType::Kiro
+        }
+    };
+
+    Ok(provider)
 }
 
 async fn run_doctor(config: &Config) -> CraiResult<()> {
@@ -145,7 +211,14 @@ async fn run_doctor(config: &Config) -> CraiResult<()> {
     }
 
     println!("\nConfiguration:");
-    println!("  Config file: {}", if std::path::Path::new("crai.toml").exists() { "Found" } else { "Not found (using defaults)" });
+    let config_path = config::default_config_path();
+    let config_status = match &config_path {
+        Some(p) if p.exists() => format!("Found at {}", p.display()),
+        Some(p) => format!("Not found (expected at {})", p.display()),
+        None => "Could not determine config directory".to_string(),
+    };
+    println!("  Config file: {}", config_status);
+    println!("  AI provider: {:?}", config.ai.provider);
     println!("  Controversiality threshold: {}", config.filters.controversiality_threshold);
     println!("  Concurrent AI requests: {}", config.ai.concurrent_requests);
 
@@ -279,15 +352,23 @@ async fn run_interactive(cli: &Cli, config: &Config) -> CraiResult<()> {
         return Ok(());
     }
 
-    // Initialize terminal
-    let mut terminal = tui::init_terminal()?;
-
-    // Create app
+    // Create app (terminal initialized later, after AI scoring)
     let mut app = App::new(config.clone(), diff_result);
 
     // Run AI scoring before entering TUI (show progress in terminal)
+    // Terminal is NOT in raw mode here, so Ctrl+C works normally
     if !cli.no_ai {
         use std::io::Write;
+
+        // Set up Ctrl+C handler
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled_clone = cancelled.clone();
+        let ctrlc_handler = tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                cancelled_clone.store(true, Ordering::SeqCst);
+                eprintln!("\n\nCancelled by user (Ctrl+C)");
+            }
+        });
 
         let provider = AiProviderFactory::create(&config.ai)?;
         let filter = ChunkFilter::new(config.filters.clone())?;
@@ -296,7 +377,7 @@ async fn run_interactive(cli: &Cli, config: &Config) -> CraiResult<()> {
         let files = app.diff_result.files.clone();
         let total_chunks: usize = files.iter().map(|f| f.chunks.len()).sum();
 
-        println!("Analyzing {} files with {} chunks...", files.len(), total_chunks);
+        println!("Analyzing {} files with {} chunks... (Ctrl+C to cancel)", files.len(), total_chunks);
         print!("  Applying heuristic filters... ");
         let _ = std::io::stdout().flush();
 
@@ -309,8 +390,14 @@ async fn run_interactive(cli: &Cli, config: &Config) -> CraiResult<()> {
         // Run scoring with real-time progress and findings display
         let mut first_progress = true;
         let mut highlights_found = 0usize;
+        let cancelled_check = cancelled.clone();
         let result = orchestrator
             .score_all(&files, &ScoringContext::default(), |update: ScoringUpdate| {
+                // Check if cancelled
+                if cancelled_check.load(Ordering::SeqCst) {
+                    return;
+                }
+
                 if first_progress {
                     println!("done");
                     println!("  AI scoring chunks...\n");
@@ -373,7 +460,18 @@ async fn run_interactive(cli: &Cli, config: &Config) -> CraiResult<()> {
                 );
                 let _ = std::io::stderr().flush();
             })
-            .await?;
+            .await;
+
+        // Cancel the Ctrl+C handler
+        ctrlc_handler.abort();
+
+        // Check if user cancelled
+        if cancelled.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+
+        // Handle scoring result
+        let result = result?;
 
         if first_progress {
             // No AI scoring was done (all filtered)
@@ -409,6 +507,9 @@ async fn run_interactive(cli: &Cli, config: &Config) -> CraiResult<()> {
             }
         }
     }
+
+    // Now initialize terminal for TUI (after AI scoring completes)
+    let mut terminal = tui::init_terminal()?;
 
     // Event handler
     let events = EventHandler::new(100);

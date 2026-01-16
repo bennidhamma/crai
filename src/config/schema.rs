@@ -86,8 +86,8 @@ impl Default for AiConfig {
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum AiProviderType {
-    #[default]
     Claude,
+    #[default]
     Kiro,
     OpenAi,
     Custom,

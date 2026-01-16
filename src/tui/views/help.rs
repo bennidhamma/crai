@@ -18,7 +18,7 @@ j/k, Up/Down     Scroll highlights (or navigate file tree)
 h/l, Left/Right  Switch focus: files <-> stream
 Tab              Toggle focus between panes
 Enter            From file tree: jump to file in stream
-[/]              Previous/Next highlight
+n/N              Next/Previous highlight
 G                Jump to end
 g                Jump to start
 Ctrl+F, PgDn     Page down
@@ -30,7 +30,6 @@ REVIEW ACTIONS
 a                Approve current highlight
 d                Mark for discussion
 r                Request changes
-n                Add note
 t                Toggle filtered chunks
 
 SPECIALIZED REVIEWS

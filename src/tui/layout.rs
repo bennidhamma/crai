@@ -164,7 +164,7 @@ impl LayoutManager {
                     if *tree_focused {
                         "[j/k] Navigate [Enter] Expand [3/Tab] Stream [1] Summary [Esc] Back"
                     } else {
-                        "[j/k] Scroll [[/]] Highlights [o] Sort [2/Tab] Files [1] Summary"
+                        "[j/k] Scroll [n/N] Highlights [o] Sort [2/Tab] Files [1] Summary"
                     }
                 }
                 View::Stats => "[1] Summary [Esc] Back [q] Quit",
